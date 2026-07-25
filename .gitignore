@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# PRD
+Collaborative_Whiteboard_PRD_1.md
