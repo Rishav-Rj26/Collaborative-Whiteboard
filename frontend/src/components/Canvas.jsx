@@ -1,44 +1,48 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Stage, Layer, Line, Rect, Ellipse, Text, Transformer, Group } from 'react-konva';
 import { v4 as uuidv4 } from 'uuid';
-import { Pencil, Square, Circle, Minus, Eraser, Trash2, Undo, Redo, MousePointer2, Type, MousePointerClick, StickyNote } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 const stringToColor = (str) => {
   let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = str.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return `hsl(${hash % 360}, 70%, 50%)`;
+  for (let i = 0; i < str.length; i++) { hash = str.charCodeAt(i) + ((hash << 5) - hash); }
+  const colors = ['#0ea5e9', '#f43f5e', '#f59e0b', '#10b981', '#8b5cf6'];
+  return colors[Math.abs(hash) % colors.length];
 };
 
 export default function Canvas({ socket, boardId }) {
+  const { user } = useAuth();
   const [elements, setElements] = useState([]);
-  const [history, setHistory] = useState([[]]); 
-  const [historyStep, setHistoryStep] = useState(0);
   
-  const [tool, setTool] = useState('select'); // select, pen, line, rect, ellipse, eraser, text, sticky
-  const [color, setColor] = useState('#191c1d');
+  // Per-user action stacks for undo/redo
+  const [undoStack, setUndoStack] = useState([]);
+  const [redoStack, setRedoStack] = useState([]);
+  
+  const [tool, setTool] = useState('select');
+  const [color, setColor] = useState('#a78bfa'); // Obsidian primary color
   const [lineWidth, setLineWidth] = useState(2);
   const [isDrawing, setIsDrawing] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
   
-  const [stageSize, setStageSize] = useState({ width: window.innerWidth, height: window.innerHeight - 56 });
+  const [stageSize, setStageSize] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [remoteCursors, setRemoteCursors] = useState({});
   const [selectedId, setSelectedId] = useState(null);
   
-  // Text editing state
   const [editingText, setEditingText] = useState(null); 
   
   const containerRef = useRef(null);
   const stageRef = useRef(null);
   const trRef = useRef(null);
+  const lastElementBeforeTransform = useRef(null);
 
-  // Handle Export
+  // Handle Export (triggered from Whiteboard.jsx)
   useEffect(() => {
     const handleExport = () => {
       if (stageRef.current) {
         setSelectedId(null);
         setTimeout(() => {
-          const uri = stageRef.current.toDataURL({ pixelRatio: 2, bg: '#f8f9fa' });
+          const uri = stageRef.current.toDataURL({ pixelRatio: 2, bg: '#09090b' });
           const link = document.createElement('a');
           link.download = `board-${boardId}.png`;
           link.href = uri;
@@ -55,10 +59,7 @@ export default function Canvas({ socket, boardId }) {
   useEffect(() => {
     const handleResize = () => {
       if (containerRef.current) {
-        setStageSize({
-          width: containerRef.current.clientWidth,
-          height: containerRef.current.clientHeight
-        });
+        setStageSize({ width: containerRef.current.clientWidth, height: containerRef.current.clientHeight });
       }
     };
     handleResize();
@@ -68,13 +69,7 @@ export default function Canvas({ socket, boardId }) {
 
   useEffect(() => {
     if (!socket) return;
-
-    socket.on('board-state', (serverElements) => {
-      setElements(serverElements);
-      setHistory([serverElements]);
-      setHistoryStep(0);
-    });
-
+    socket.on('board-state', (serverElements) => setElements(serverElements));
     socket.on('update-element', ({ element }) => {
       setElements(prev => {
         const index = prev.findIndex(e => e.id === element.id);
@@ -86,151 +81,143 @@ export default function Canvas({ socket, boardId }) {
         return [...prev, element];
       });
     });
-
     socket.on('delete-element', (elementId) => {
       setElements(prev => prev.filter(e => e.id !== elementId));
       if (selectedId === elementId) setSelectedId(null);
     });
-
-    socket.on('cursor-move', (data) => {
-      setRemoteCursors(prev => ({
-        ...prev,
-        [data.userId]: data
-      }));
-    });
-
+    socket.on('cursor-move', (data) => setRemoteCursors(prev => ({ ...prev, [data.userId]: data })));
     socket.on('cursor-remove', (userId) => {
-      setRemoteCursors(prev => {
-        const next = { ...prev };
-        delete next[userId];
-        return next;
-      });
+      setRemoteCursors(prev => { const next = { ...prev }; delete next[userId]; return next; });
     });
-
     return () => {
-      socket.off('board-state');
-      socket.off('update-element');
-      socket.off('delete-element');
-      socket.off('cursor-move');
-      socket.off('cursor-remove');
+      socket.off('board-state'); socket.off('update-element'); socket.off('delete-element');
+      socket.off('cursor-move'); socket.off('cursor-remove');
     };
   }, [socket, selectedId]);
 
-  const saveHistory = useCallback((newElements) => {
-    setHistory(prev => {
-      const newHistory = prev.slice(0, historyStep + 1);
-      newHistory.push([...newElements]);
-      setHistoryStep(newHistory.length - 1);
-      return newHistory;
-    });
-  }, [historyStep]);
+  const recordAction = (action) => {
+    setUndoStack(prev => [...prev, action]);
+    setRedoStack([]); 
+  };
 
   const undo = useCallback(() => {
-    if (historyStep > 0) {
-      const newStep = historyStep - 1;
-      setHistoryStep(newStep);
-      setElements(history[newStep]);
-      socket.emit('set-elements', { boardId, elements: history[newStep] });
-      setSelectedId(null);
+    if (undoStack.length === 0) return;
+    const action = undoStack[undoStack.length - 1];
+    setUndoStack(prev => prev.slice(0, -1));
+    setRedoStack(prev => [...prev, action]);
+    if (action.type === 'add') {
+      socket.emit('delete-element', { boardId, elementId: action.element.id });
+      setElements(prev => prev.filter(e => e.id !== action.element.id));
+      if (selectedId === action.element.id) setSelectedId(null);
+    } else if (action.type === 'delete') {
+      socket.emit('update-element', { boardId, element: action.element });
+      setElements(prev => [...prev, action.element]);
+    } else if (action.type === 'update') {
+      socket.emit('update-element', { boardId, element: action.before });
+      setElements(prev => prev.map(e => e.id === action.before.id ? action.before : e));
     }
-  }, [historyStep, history, socket, boardId]);
+  }, [undoStack, socket, boardId, selectedId]);
 
   const redo = useCallback(() => {
-    if (historyStep < history.length - 1) {
-      const newStep = historyStep + 1;
-      setHistoryStep(newStep);
-      setElements(history[newStep]);
-      socket.emit('set-elements', { boardId, elements: history[newStep] });
-      setSelectedId(null);
+    if (redoStack.length === 0) return;
+    const action = redoStack[redoStack.length - 1];
+    setRedoStack(prev => prev.slice(0, -1));
+    setUndoStack(prev => [...prev, action]);
+    if (action.type === 'add') {
+      socket.emit('update-element', { boardId, element: action.element });
+      setElements(prev => [...prev, action.element]);
+    } else if (action.type === 'delete') {
+      socket.emit('delete-element', { boardId, elementId: action.element.id });
+      setElements(prev => prev.filter(e => e.id !== action.element.id));
+      if (selectedId === action.element.id) setSelectedId(null);
+    } else if (action.type === 'update') {
+      socket.emit('update-element', { boardId, element: action.after });
+      setElements(prev => prev.map(e => e.id === action.after.id ? action.after : e));
     }
-  }, [historyStep, history, socket, boardId]);
+  }, [redoStack, socket, boardId, selectedId]);
 
   const clearCanvas = () => {
-    if (window.confirm("Are you sure you want to clear the canvas?")) {
-      setElements([]);
-      saveHistory([]);
-      setSelectedId(null);
+    if (window.confirm("Are you sure you want to clear the canvas? This cannot be undone.")) {
+      setElements([]); setUndoStack([]); setRedoStack([]); setSelectedId(null);
       socket.emit('clear-canvas', boardId);
     }
   };
 
-  // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (editingText) return;
-
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
-        if (e.shiftKey) redo();
-        else undo();
+        if (e.shiftKey) redo(); else undo();
         e.preventDefault();
       }
-      
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
-        redo();
-        e.preventDefault();
+        redo(); e.preventDefault();
       }
-
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
-        setElements(prev => {
-          const newElements = prev.filter(el => el.id !== selectedId);
+        const el = elements.find(e => e.id === selectedId);
+        if (el) {
+          recordAction({ type: 'delete', element: el });
+          setElements(prev => prev.filter(e => e.id !== selectedId));
           socket.emit('delete-element', { boardId, elementId: selectedId });
-          saveHistory(newElements);
-          return newElements;
-        });
-        setSelectedId(null);
+          setSelectedId(null);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedId, editingText, boardId, socket, undo, redo, saveHistory]);
+  }, [selectedId, editingText, boardId, socket, undo, redo, elements]);
 
-  const checkDeselect = (e) => {
-    const clickedOnEmpty = e.target === e.target.getStage();
-    if (clickedOnEmpty) {
-      setSelectedId(null);
+  const handleWheel = (e) => {
+    e.evt.preventDefault();
+    if (e.evt.ctrlKey) {
+      // Zoom
+      const scaleBy = 1.05;
+      const stage = e.target.getStage();
+      const oldScale = stage.scaleX();
+      const pointer = stage.getPointerPosition();
+      const mousePointTo = { x: (pointer.x - stage.x()) / oldScale, y: (pointer.y - stage.y()) / oldScale };
+      const newScale = e.evt.deltaY < 0 ? oldScale * scaleBy : oldScale / scaleBy;
+      setZoom(newScale);
+      setStagePos({ x: pointer.x - mousePointTo.x * newScale, y: pointer.y - mousePointTo.y * newScale });
+    } else {
+      // Pan
+      setStagePos(prev => ({ x: prev.x - e.evt.deltaX, y: prev.y - e.evt.deltaY }));
     }
   };
 
+  const getRelativePointerPosition = (stage) => {
+    const transform = stage.getAbsoluteTransform().copy();
+    transform.invert();
+    const pos = stage.getPointerPosition();
+    return transform.point(pos);
+  };
+
+  const checkDeselect = (e) => {
+    const clickedOnEmpty = e.target === e.target.getStage();
+    if (clickedOnEmpty) setSelectedId(null);
+  };
+
   const handleMouseDown = (e) => {
-    if (tool === 'select') {
-      checkDeselect(e);
+    if (e.evt.button === 1 || e.evt.button === 2) return; // Ignore middle/right clicks
+    
+    if (tool === 'select' || tool === 'pan') {
+      if (tool === 'select') checkDeselect(e);
       return;
     }
-
     if (editingText) return;
 
-    const pos = e.target.getStage().getPointerPosition();
+    const pos = getRelativePointerPosition(e.target.getStage());
 
-    if (tool === 'text') {
+    if (tool === 'text' || tool === 'sticky') {
+      const isSticky = tool === 'sticky';
       const newElement = {
         id: uuidv4(),
-        tool: 'text',
-        x: pos.x,
-        y: pos.y,
+        tool,
+        x: pos.x, y: pos.y,
         text: '',
-        color: color,
-        fontSize: 24
-      };
-      setElements([...elements, newElement]);
-      setEditingText(newElement);
-      setSelectedId(null);
-      return;
-    }
-
-    if (tool === 'sticky') {
-      // Map dark colors to pastel for sticky notes if selected
-      const pastelColor = color === '#191c1d' ? '#fef3c7' : color;
-      
-      const newElement = {
-        id: uuidv4(),
-        tool: 'sticky',
-        x: pos.x,
-        y: pos.y,
-        width: 150,
-        height: 150,
-        text: '',
-        color: pastelColor,
-        fontSize: 16
+        color: isSticky ? '#fef08a' : color, // Default yellow for sticky
+        fontSize: isSticky ? 14 : 24,
+        ...(isSticky && { width: 150, height: 150 })
       };
       setElements([...elements, newElement]);
       setEditingText(newElement);
@@ -242,18 +229,12 @@ export default function Canvas({ socket, boardId }) {
     setSelectedId(null);
     
     const newElement = {
-      id: uuidv4(),
-      tool,
+      id: uuidv4(), tool,
       points: [pos.x, pos.y],
-      x: pos.x,
-      y: pos.y,
-      width: 0,
-      height: 0,
-      color: tool === 'eraser' ? '#f8f9fa' : color,
+      x: pos.x, y: pos.y, width: 0, height: 0,
+      color: tool === 'eraser' ? '#09090b' : color, // Match obsidian background for eraser
       strokeWidth: tool === 'eraser' ? 20 : lineWidth,
-      rotation: 0,
-      scaleX: 1,
-      scaleY: 1
+      rotation: 0, scaleX: 1, scaleY: 1
     };
 
     setElements([...elements, newElement]);
@@ -264,7 +245,7 @@ export default function Canvas({ socket, boardId }) {
 
   const handleMouseMove = (e) => {
     const stage = e.target.getStage();
-    const point = stage.getPointerPosition();
+    const point = getRelativePointerPosition(stage);
     
     const now = Date.now();
     if (now - lastCursorEmit.current > 30) { 
@@ -272,11 +253,10 @@ export default function Canvas({ socket, boardId }) {
       lastCursorEmit.current = now;
     }
 
-    if (!isDrawing || tool === 'select' || tool === 'text' || tool === 'sticky') return;
+    if (!isDrawing || tool === 'select' || tool === 'pan' || tool === 'text' || tool === 'sticky') return;
 
     setElements(prev => {
       const lastElement = { ...prev[prev.length - 1] };
-      
       if (lastElement.tool === 'pen' || lastElement.tool === 'eraser') {
         lastElement.points = lastElement.points.concat([point.x, point.y]);
       } else if (lastElement.tool === 'line') {
@@ -285,7 +265,6 @@ export default function Canvas({ socket, boardId }) {
         lastElement.width = point.x - lastElement.x;
         lastElement.height = point.y - lastElement.y;
       }
-      
       const newElements = [...prev];
       newElements[newElements.length - 1] = lastElement;
       socket.emit('update-element', { boardId, element: lastElement });
@@ -296,7 +275,8 @@ export default function Canvas({ socket, boardId }) {
   const handleMouseUp = () => {
     if (isDrawing) {
       setIsDrawing(false);
-      saveHistory(elements);
+      const lastElement = elements[elements.length - 1];
+      recordAction({ type: 'add', element: lastElement });
     }
   };
 
@@ -310,201 +290,108 @@ export default function Canvas({ socket, boardId }) {
     }
   }, [selectedId, elements]);
 
+  const handleTransformStart = (e) => { lastElementBeforeTransform.current = elements.find(el => el.id === e.target.id()); };
   const handleTransformEnd = (e) => {
     const node = e.target;
     const newEl = {
       ...elements.find(el => el.id === node.id()),
-      x: node.x(),
-      y: node.y(),
-      rotation: node.rotation(),
-      scaleX: node.scaleX(),
-      scaleY: node.scaleY()
+      x: node.x(), y: node.y(), rotation: node.rotation(), scaleX: node.scaleX(), scaleY: node.scaleY()
     };
-
-    setElements(prev => {
-      const next = prev.map(el => el.id === newEl.id ? newEl : el);
-      saveHistory(next);
-      return next;
-    });
-    
+    recordAction({ type: 'update', before: lastElementBeforeTransform.current, after: newEl });
+    setElements(prev => prev.map(el => el.id === newEl.id ? newEl : el));
     socket.emit('update-element', { boardId, element: newEl });
   };
-
+  const handleDragStart = (e) => { lastElementBeforeTransform.current = elements.find(el => el.id === e.target.id()); };
   const handleDragEnd = (e) => {
-    const id = e.target.id();
-    const newEl = {
-      ...elements.find(el => el.id === id),
-      x: e.target.x(),
-      y: e.target.y()
-    };
-    setElements(prev => {
-      const next = prev.map(el => el.id === newEl.id ? newEl : el);
-      saveHistory(next);
-      return next;
-    });
+    const newEl = { ...elements.find(el => el.id === e.target.id()), x: e.target.x(), y: e.target.y() };
+    recordAction({ type: 'update', before: lastElementBeforeTransform.current, after: newEl });
+    setElements(prev => prev.map(el => el.id === newEl.id ? newEl : el));
     socket.emit('update-element', { boardId, element: newEl });
   };
 
   const renderElement = (el) => {
-    const isSelected = el.id === selectedId;
     const isDraggable = tool === 'select';
-    
     const commonProps = {
-      key: el.id,
-      id: el.id,
-      x: el.x || 0,
-      y: el.y || 0,
-      rotation: el.rotation || 0,
-      scaleX: el.scaleX || 1,
-      scaleY: el.scaleY || 1,
+      key: el.id, id: el.id, x: el.x || 0, y: el.y || 0,
+      rotation: el.rotation || 0, scaleX: el.scaleX || 1, scaleY: el.scaleY || 1,
       draggable: isDraggable,
       onClick: () => { if (tool === 'select') setSelectedId(el.id); },
       onTap: () => { if (tool === 'select') setSelectedId(el.id); },
-      onDragEnd: handleDragEnd,
-      onTransformEnd: handleTransformEnd,
+      onDragStart: handleDragStart, onDragEnd: handleDragEnd,
+      onTransformStart: handleTransformStart, onTransformEnd: handleTransformEnd,
     };
-
     switch (el.tool) {
-      case 'pen':
-      case 'eraser':
-      case 'line':
-        return (
-          <Line
-            {...commonProps}
-            points={el.points}
-            stroke={el.color}
-            strokeWidth={el.strokeWidth}
-            tension={el.tool === 'pen' ? 0.5 : 0}
-            lineCap="round"
-            lineJoin="round"
-            globalCompositeOperation={el.tool === 'eraser' ? 'destination-out' : 'source-over'}
-          />
-        );
+      case 'pen': case 'eraser': case 'line':
+        return <Line {...commonProps} points={el.points} stroke={el.color} strokeWidth={el.strokeWidth} tension={el.tool === 'pen' ? 0.5 : 0} lineCap="round" lineJoin="round" globalCompositeOperation={el.tool === 'eraser' ? 'destination-out' : 'source-over'} />;
       case 'rect':
-        return (
-          <Rect
-            {...commonProps}
-            width={el.width}
-            height={el.height}
-            stroke={el.color}
-            strokeWidth={el.strokeWidth}
-          />
-        );
+        return <Rect {...commonProps} width={el.width} height={el.height} stroke={el.color} strokeWidth={el.strokeWidth} />;
       case 'ellipse':
-        return (
-          <Ellipse
-            {...commonProps}
-            width={el.width}
-            height={el.height}
-            radiusX={Math.abs((el.width||0) / 2)}
-            radiusY={Math.abs((el.height||0) / 2)}
-            offset={{ x: -(el.width||0) / 2, y: -(el.height||0) / 2 }}
-            stroke={el.color}
-            strokeWidth={el.strokeWidth}
-          />
-        );
+        return <Ellipse {...commonProps} width={el.width} height={el.height} radiusX={Math.abs((el.width||0)/2)} radiusY={Math.abs((el.height||0)/2)} offset={{ x: -(el.width||0)/2, y: -(el.height||0)/2 }} stroke={el.color} strokeWidth={el.strokeWidth} />;
       case 'text':
-        return (
-          <Text
-            {...commonProps}
-            text={el.text}
-            fontSize={el.fontSize || 24}
-            fill={el.color}
-            fontFamily="Inter"
-            onDblClick={() => { if (tool === 'select') setEditingText(el); }}
-          />
-        );
+        return <Text {...commonProps} text={el.text} fontSize={el.fontSize || 24} fill={el.color} fontFamily="Geist" onDblClick={() => { if (tool === 'select') setEditingText(el); }} />;
       case 'sticky':
         return (
           <Group {...commonProps}>
-            <Rect
-              width={el.width || 150}
-              height={el.height || 150}
-              fill={el.color}
-              shadowColor="rgba(0,0,0,0.2)"
-              shadowBlur={10}
-              shadowOffset={{ x: 2, y: 4 }}
-            />
-            <Text
-              text={el.text}
-              width={el.width || 150}
-              height={el.height || 150}
-              padding={10}
-              fontSize={el.fontSize || 16}
-              fill="#191c1d"
-              fontFamily="Inter"
-              wrap="word"
-              onDblClick={() => { if (tool === 'select') setEditingText(el); }}
-            />
+            <Rect width={el.width || 150} height={el.height || 150} fill={el.color} cornerRadius={4} shadowColor="rgba(0,0,0,0.4)" shadowBlur={12} shadowOffset={{ x: 2, y: 6 }} />
+            <Text text={el.text} width={el.width || 150} height={el.height || 150} padding={12} fontSize={el.fontSize || 14} fill="#09090b" fontFamily="Geist" wrap="word" onDblClick={() => { if (tool === 'select') setEditingText(el); }} />
           </Group>
         );
-      default:
-        return null;
+      default: return null;
     }
   };
 
+  const getAbsolutePosition = (el) => {
+    if (!stageRef.current) return { x: el.x, y: el.y };
+    const transform = stageRef.current.getAbsoluteTransform();
+    return transform.point({ x: el.x, y: el.y });
+  };
+
+  // Tool UI Helper
+  const ToolButton = ({ id, icon, title }) => (
+    <button
+      onClick={() => { setTool(id); setSelectedId(null); }} title={title}
+      className={`w-10 h-10 rounded-lg flex items-center justify-center transition-colors ${tool === id ? 'text-primary bg-primary/20' : 'text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface'}`}
+    >
+      <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400" }}>{icon}</span>
+    </button>
+  );
+
   return (
-    <div ref={containerRef} className="w-full h-full relative bg-background overflow-hidden" 
-         style={{ cursor: tool === 'select' ? 'default' : (tool === 'text' || tool === 'sticky') ? 'text' : 'crosshair' }}>
+    <div ref={containerRef} className="w-full h-full relative canvas-grid-bg overflow-hidden" 
+         style={{ cursor: tool === 'select' ? 'default' : tool === 'pan' ? 'grab' : (tool === 'text' || tool === 'sticky') ? 'text' : 'crosshair' }}>
       
-      {/* Floating Toolbar */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-surface shadow-level-2 rounded-xl p-2 flex items-center gap-4 border border-outline/20 z-40">
-        <div className="flex gap-1 items-center px-2">
-          {[
-            { id: 'select', icon: MousePointerClick },
-            { id: 'pen', icon: Pencil },
-            { id: 'line', icon: Minus },
-            { id: 'rect', icon: Square },
-            { id: 'ellipse', icon: Circle },
-            { id: 'text', icon: Type },
-            { id: 'sticky', icon: StickyNote },
-            { id: 'eraser', icon: Eraser },
-          ].map(t => (
-            <button
-              key={t.id}
-              onClick={() => { setTool(t.id); setSelectedId(null); }}
-              className={`p-2 rounded-md transition-colors ${tool === t.id ? 'bg-primary/10 text-primary' : 'text-on-surface/70 hover:bg-surface-dim'}`}
-              title={t.id}
-            >
-              <t.icon size={18} />
-            </button>
-          ))}
-        </div>
-        <div className="w-px h-6 bg-outline/20"></div>
-        <div className="flex gap-1 items-center px-2">
-          {['#191c1d', '#4f46e5', '#ba1a1a', '#fef3c7'].map((c) => (
-            <button
-              key={c}
-              onClick={() => setColor(c)}
-              className={`w-6 h-6 rounded-full border-2 transition-transform ${color === c ? 'border-outline scale-110' : 'border-transparent'}`}
-              style={{ backgroundColor: c }}
-              title={`Color ${c}`}
-            />
-          ))}
-        </div>
-        <div className="w-px h-6 bg-outline/20"></div>
-        <div className="flex items-center gap-2 px-2">
-          <input 
-            type="range" 
-            min="1" 
-            max="20" 
-            value={lineWidth} 
-            onChange={(e) => setLineWidth(Number(e.target.value))}
-            className="w-20 accent-primary"
-            title="Stroke Width"
-          />
-        </div>
-        <div className="w-px h-6 bg-outline/20"></div>
-        <div className="flex gap-1 items-center px-2">
-          <button onClick={undo} disabled={historyStep === 0} className="p-2 rounded-md text-on-surface/70 hover:bg-surface-dim disabled:opacity-30" title="Undo (Ctrl+Z)">
-            <Undo size={18} />
-          </button>
-          <button onClick={redo} disabled={historyStep === history.length - 1} className="p-2 rounded-md text-on-surface/70 hover:bg-surface-dim disabled:opacity-30" title="Redo (Ctrl+Y)">
-            <Redo size={18} />
-          </button>
-          <button onClick={clearCanvas} className="p-2 rounded-md text-error hover:bg-error/10" title="Clear Canvas">
-            <Trash2 size={18} />
-          </button>
+      {/* Floating Left Sidebar - Obsidian Toolbar */}
+      <div className="absolute left-4 top-1/2 -translate-y-1/2 flex flex-col gap-2 z-40 pointer-events-none">
+        <div className="bg-surface border border-outline-variant rounded-xl p-1 shadow-obsidian flex flex-col gap-1 pointer-events-auto w-12 items-center">
+          
+          <ToolButton id="select" icon="near_me" title="Select" />
+          <ToolButton id="pan" icon="pan_tool" title="Pan" />
+          <ToolButton id="pen" icon="edit" title="Pen" />
+          <ToolButton id="line" icon="horizontal_rule" title="Line" />
+          <ToolButton id="rect" icon="crop_square" title="Rectangle" />
+          <ToolButton id="ellipse" icon="radio_button_unchecked" title="Circle" />
+          <ToolButton id="eraser" icon="ink_eraser" title="Eraser" />
+          <ToolButton id="text" icon="title" title="Text" />
+          <ToolButton id="sticky" icon="sticky_note_2" title="Sticky Note" />
+          
+          <div className="w-8 h-[1px] bg-outline-variant my-1"></div>
+          
+          {/* Colors */}
+          <div className="flex flex-col gap-2 py-1 items-center">
+            {['#fafafa', '#ef4444', '#a78bfa', '#34d399', '#f59e0b'].map(c => (
+              <button 
+                key={c} onClick={() => setColor(c)}
+                className={`w-5 h-5 rounded-full border transition-all ${color === c ? 'ring-2 ring-offset-2 ring-primary border-transparent' : 'border-outline-variant'}`}
+                style={{ backgroundColor: c, ringOffsetColor: '#0c0c0f' }} title={`Color ${c}`}
+              />
+            ))}
+          </div>
+          
+          {/* Undo/Redo/Trash */}
+          <div className="w-8 h-[1px] bg-outline-variant my-1"></div>
+          <button onClick={undo} disabled={undoStack.length === 0} className="w-10 h-10 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors disabled:opacity-30" title="Undo"><span className="material-symbols-outlined text-[20px]">undo</span></button>
+          <button onClick={redo} disabled={redoStack.length === 0} className="w-10 h-10 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors disabled:opacity-30" title="Redo"><span className="material-symbols-outlined text-[20px]">redo</span></button>
+          <button onClick={clearCanvas} className="w-10 h-10 rounded-lg flex items-center justify-center text-error hover:bg-error-container transition-colors" title="Clear Canvas"><span className="material-symbols-outlined text-[20px]">delete</span></button>
         </div>
       </div>
 
@@ -512,85 +399,77 @@ export default function Canvas({ socket, boardId }) {
       {editingText && (
         <textarea
           autoFocus
-          className="absolute z-50 bg-transparent outline-none resize-none m-0 overflow-hidden"
+          className="absolute z-50 outline-none resize-none m-0 overflow-hidden"
           style={{
-            top: editingText.y + (editingText.tool === 'sticky' ? 10 : 0),
-            left: editingText.x + (editingText.tool === 'sticky' ? 10 : 0),
-            width: editingText.tool === 'sticky' ? (editingText.width - 20) : 'auto',
-            height: editingText.tool === 'sticky' ? (editingText.height - 20) : 'auto',
-            color: editingText.tool === 'sticky' ? '#191c1d' : editingText.color,
-            fontSize: `${editingText.fontSize}px`,
-            fontFamily: 'Inter',
-            minWidth: editingText.tool === 'sticky' ? '0' : '100px',
+            top: getAbsolutePosition(editingText).y + (editingText.tool === 'sticky' ? 12*zoom : 0),
+            left: getAbsolutePosition(editingText).x + (editingText.tool === 'sticky' ? 12*zoom : 0),
+            width: (editingText.tool === 'sticky' ? (editingText.width - 24) : 'auto') * zoom,
+            height: (editingText.tool === 'sticky' ? (editingText.height - 24) : 'auto') * zoom,
+            color: editingText.tool === 'sticky' ? '#09090b' : editingText.color,
+            fontSize: `${editingText.fontSize * zoom}px`,
+            fontFamily: 'Geist',
+            minWidth: editingText.tool === 'sticky' ? '0' : '150px',
             minHeight: editingText.tool === 'sticky' ? '0' : '40px',
-            border: editingText.tool === 'text' ? '1px dashed #ccc' : 'none'
+            border: editingText.tool === 'text' ? '1px dashed #52525b' : 'none',
+            background: editingText.tool === 'text' ? 'rgba(9, 9, 11, 0.8)' : 'transparent',
+            borderRadius: editingText.tool === 'text' ? '4px' : '0',
+            padding: editingText.tool === 'text' ? '4px' : '0',
           }}
           defaultValue={editingText.text}
           onBlur={(e) => {
             const val = e.target.value;
             const newEl = { ...editingText, text: val };
-            
-            setElements(prev => {
-              let next;
-              if (val.trim() === '' && editingText.tool === 'text') {
-                next = prev.filter(el => el.id !== editingText.id);
-                socket.emit('delete-element', { boardId, elementId: editingText.id });
-              } else {
-                next = prev.map(el => el.id === editingText.id ? newEl : el);
-                socket.emit('update-element', { boardId, element: newEl });
-              }
-              saveHistory(next);
-              return next;
-            });
+            if (val.trim() === '' && editingText.tool === 'text') {
+              socket.emit('delete-element', { boardId, elementId: editingText.id });
+              setElements(prev => prev.filter(el => el.id !== editingText.id));
+              recordAction({ type: 'delete', element: editingText });
+            } else {
+              socket.emit('update-element', { boardId, element: newEl });
+              setElements(prev => prev.map(el => el.id === editingText.id ? newEl : el));
+              const isNew = !elements.find(el => el.text && el.id === editingText.id);
+              if (isNew) recordAction({ type: 'add', element: newEl });
+              else recordAction({ type: 'update', before: editingText, after: newEl });
+            }
             setEditingText(null);
             if (tool === 'text' || tool === 'sticky') setTool('select');
           }}
         />
       )}
 
-      {/* Remote Cursors Layer */}
-      <div className="absolute inset-0 pointer-events-none z-30">
-        {Object.values(remoteCursors).map(cursor => (
-          <div 
-            key={cursor.userId}
-            className="absolute transition-all duration-75 ease-linear"
-            style={{ 
-              transform: `translate(${cursor.x}px, ${cursor.y}px)`,
-              color: stringToColor(cursor.name)
-            }}
-          >
-            <MousePointer2 size={16} fill="currentColor" className="-rotate-12 drop-shadow-md" />
-            <div 
-              className="ml-3 mt-1 px-2 py-0.5 text-xs text-white rounded shadow-sm whitespace-nowrap"
-              style={{ backgroundColor: stringToColor(cursor.name) }}
-            >
-              {cursor.name}
-            </div>
-          </div>
-        ))}
+      {/* Remote Cursors */}
+      <div className="absolute inset-0 pointer-events-none z-30 overflow-hidden">
+        {Object.values(remoteCursors).map(cursor => {
+           if(cursor.userId === user?.id) return null;
+           // Project cursor relative to zoom/pan
+           const absX = cursor.x * zoom + stagePos.x;
+           const absY = cursor.y * zoom + stagePos.y;
+           return (
+             <div key={cursor.userId} className="absolute transition-all duration-75 ease-linear" style={{ transform: `translate(${absX}px, ${absY}px)`, color: stringToColor(cursor.name) }}>
+               <span className="material-symbols-outlined absolute -top-1 -left-1" style={{ fontVariationSettings: "'FILL' 1" }}>near_me</span>
+               <div className="ml-5 mt-4 px-2 py-0.5 text-[10px] text-white rounded-md shadow-sm whitespace-nowrap font-medium" style={{ backgroundColor: stringToColor(cursor.name) }}>
+                 {cursor.name}
+               </div>
+             </div>
+           )
+        })}
       </div>
 
       <Stage
-        ref={stageRef}
-        width={stageSize.width}
-        height={stageSize.height}
-        onMouseDown={handleMouseDown}
-        onMousemove={handleMouseMove}
-        onMouseup={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        onTouchStart={handleMouseDown}
-        onTouchMove={handleMouseMove}
-        onTouchEnd={handleMouseUp}
+        ref={stageRef} width={stageSize.width} height={stageSize.height}
+        scaleX={zoom} scaleY={zoom} x={stagePos.x} y={stagePos.y}
+        onWheel={handleWheel}
+        draggable={tool === 'pan'}
+        onDragEnd={(e) => { if(tool === 'pan') setStagePos({ x: e.target.x(), y: e.target.y() }); }}
+        onMouseDown={handleMouseDown} onMousemove={handleMouseMove} onMouseup={handleMouseUp} onMouseLeave={handleMouseUp}
+        onTouchStart={handleMouseDown} onTouchMove={handleMouseMove} onTouchEnd={handleMouseUp}
       >
         <Layer>
           {elements.map((el) => renderElement(el))}
           {selectedId && tool === 'select' && (
             <Transformer 
               ref={trRef} 
-              boundBoxFunc={(oldBox, newBox) => {
-                if (Math.abs(newBox.width) < 5 || Math.abs(newBox.height) < 5) return oldBox;
-                return newBox;
-              }}
+              boundBoxFunc={(oldBox, newBox) => (Math.abs(newBox.width) < 5 || Math.abs(newBox.height) < 5) ? oldBox : newBox}
+              borderStroke="#a78bfa" anchorStroke="#a78bfa" anchorFill="#18181b" anchorSize={8}
             />
           )}
         </Layer>
