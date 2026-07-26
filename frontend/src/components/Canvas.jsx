@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Stage, Layer, Line, Rect, Ellipse, Text, Transformer, Group } from 'react-konva';
+import { Stage, Layer, Line, Rect, Ellipse, Text, Transformer, Group, Image as KonvaImage } from 'react-konva';
 import { v4 as uuidv4 } from 'uuid';
 import { useAuth } from '../context/AuthContext';
 
@@ -10,8 +10,19 @@ const stringToColor = (str) => {
   return colors[Math.abs(hash) % colors.length];
 };
 
+const URLImage = ({ el, commonProps }) => {
+  const [image, setImage] = useState(null);
+  useEffect(() => {
+    const img = new window.Image();
+    img.src = el.src;
+    img.crossOrigin = 'Anonymous';
+    img.onload = () => setImage(img);
+  }, [el.src]);
+  return <KonvaImage {...commonProps} image={image} width={el.width} height={el.height} />;
+};
+
 export default function Canvas({ socket, boardId }) {
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const [elements, setElements] = useState([]);
   
   // Per-user action stacks for undo/redo
@@ -30,11 +41,77 @@ export default function Canvas({ socket, boardId }) {
   const [selectedId, setSelectedId] = useState(null);
   
   const [editingText, setEditingText] = useState(null); 
+  const [laserPoints, setLaserPoints] = useState({});
+  const fileInputRef = useRef(null);
   
   const containerRef = useRef(null);
   const stageRef = useRef(null);
   const trRef = useRef(null);
   const lastElementBeforeTransform = useRef(null);
+
+  // Cleanup laser points older than 1 second
+  useEffect(() => {
+    let animationFrameId;
+    const animate = () => {
+      const now = Date.now();
+      let updated = false;
+      setLaserPoints(prev => {
+        const next = { ...prev };
+        for (const [uid, points] of Object.entries(next)) {
+          const filtered = points.filter(p => now - p.timestamp < 1000);
+          if (filtered.length !== points.length) {
+            updated = true;
+            if (filtered.length === 0) delete next[uid];
+            else next[uid] = filtered;
+          }
+        }
+        return updated ? next : prev;
+      });
+      animationFrameId = requestAnimationFrame(animate);
+    };
+    animate();
+    return () => cancelAnimationFrame(animationFrameId);
+  }, []);
+
+  const handleImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    e.target.value = ''; // Reset input
+    const formData = new FormData();
+    formData.append('image', file);
+    
+    try {
+      const res = await fetch('http://localhost:3001/api/upload', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData
+      });
+      const data = await res.json();
+      
+      if (data.url) {
+        const center = {
+           x: stageSize.width / 2 / zoom - stagePos.x / zoom,
+           y: stageSize.height / 2 / zoom - stagePos.y / zoom
+        };
+        const img = new window.Image();
+        img.src = data.url;
+        img.onload = () => {
+          const newElement = {
+            id: uuidv4(), tool: 'image', src: data.url,
+            x: center.x - img.width / 4, y: center.y - img.height / 4,
+            width: img.width / 2, height: img.height / 2, // scale down by default
+            rotation: 0, scaleX: 1, scaleY: 1
+          };
+          setElements(prev => [...prev, newElement]);
+          socket.emit('update-element', { boardId, element: newElement });
+          recordAction({ type: 'add', element: newElement });
+        };
+      }
+    } catch (err) {
+      console.error('Upload failed', err);
+    }
+  };
 
   // Handle Export (triggered from Whiteboard.jsx)
   useEffect(() => {
@@ -89,9 +166,15 @@ export default function Canvas({ socket, boardId }) {
     socket.on('cursor-remove', (userId) => {
       setRemoteCursors(prev => { const next = { ...prev }; delete next[userId]; return next; });
     });
+    socket.on('laser-draw', (data) => {
+      setLaserPoints(prev => ({
+        ...prev,
+        [data.userId]: [...(prev[data.userId] || []), { x: data.x, y: data.y, timestamp: Date.now(), color: stringToColor(data.name) }]
+      }));
+    });
     return () => {
       socket.off('board-state'); socket.off('update-element'); socket.off('delete-element');
-      socket.off('cursor-move'); socket.off('cursor-remove');
+      socket.off('cursor-move'); socket.off('cursor-remove'); socket.off('laser-draw');
     };
   }, [socket, selectedId]);
 
@@ -208,6 +291,11 @@ export default function Canvas({ socket, boardId }) {
 
     const pos = getRelativePointerPosition(e.target.getStage());
 
+    if (tool === 'laser') {
+      setIsDrawing(true);
+      return;
+    }
+
     if (tool === 'text' || tool === 'sticky') {
       const isSticky = tool === 'sticky';
       const newElement = {
@@ -255,6 +343,15 @@ export default function Canvas({ socket, boardId }) {
 
     if (!isDrawing || tool === 'select' || tool === 'pan' || tool === 'text' || tool === 'sticky') return;
 
+    if (tool === 'laser') {
+      setLaserPoints(prev => ({
+        ...prev,
+        [user.id]: [...(prev[user.id] || []), { x: point.x, y: point.y, timestamp: Date.now(), color: color }]
+      }));
+      socket.emit('laser-draw', { boardId, laserPoint: point });
+      return;
+    }
+
     setElements(prev => {
       const lastElement = { ...prev[prev.length - 1] };
       if (lastElement.tool === 'pen' || lastElement.tool === 'eraser') {
@@ -275,6 +372,7 @@ export default function Canvas({ socket, boardId }) {
   const handleMouseUp = () => {
     if (isDrawing) {
       setIsDrawing(false);
+      if (tool === 'laser') return; // Do not record action for laser
       const lastElement = elements[elements.length - 1];
       recordAction({ type: 'add', element: lastElement });
     }
@@ -336,6 +434,8 @@ export default function Canvas({ socket, boardId }) {
             <Text text={el.text} width={el.width || 150} height={el.height || 150} padding={12} fontSize={el.fontSize || 14} fill="#09090b" fontFamily="Geist" wrap="word" onDblClick={() => { if (tool === 'select') setEditingText(el); }} />
           </Group>
         );
+      case 'image':
+        return <URLImage key={el.id} el={el} commonProps={commonProps} />;
       default: return null;
     }
   };
@@ -373,6 +473,15 @@ export default function Canvas({ socket, boardId }) {
           <ToolButton id="eraser" icon="ink_eraser" title="Eraser" />
           <ToolButton id="text" icon="title" title="Text" />
           <ToolButton id="sticky" icon="sticky_note_2" title="Sticky Note" />
+          <ToolButton id="laser" icon="gesture" title="Laser Pointer" />
+          
+          <button
+            onClick={() => fileInputRef.current?.click()} title="Upload Image"
+            className="w-10 h-10 rounded-lg flex items-center justify-center transition-colors text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface"
+          >
+            <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400" }}>image</span>
+          </button>
+          <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
           
           <div className="w-8 h-[1px] bg-outline-variant my-1"></div>
           
@@ -472,6 +581,13 @@ export default function Canvas({ socket, boardId }) {
               borderStroke="#a78bfa" anchorStroke="#a78bfa" anchorFill="#18181b" anchorSize={8}
             />
           )}
+          {/* Laser Points */}
+          {Object.entries(laserPoints).map(([uid, points]) => {
+            if (points.length < 2) return null;
+            const pts = points.flatMap(p => [p.x, p.y]);
+            const strokeColor = points[points.length - 1].color;
+            return <Line key={`laser-${uid}`} points={pts} stroke={strokeColor} strokeWidth={4} tension={0.5} lineCap="round" lineJoin="round" opacity={0.6} shadowColor={strokeColor} shadowBlur={8} listening={false} />;
+          })}
         </Layer>
       </Stage>
     </div>
