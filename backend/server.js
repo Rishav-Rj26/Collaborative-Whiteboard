@@ -35,6 +35,8 @@ const io = new Server(server, {
   }
 });
 
+app.set('io', io);
+
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); // Increased limit for larger boards
 
@@ -69,20 +71,20 @@ const getRoomUsers = async (boardId) => {
 // Helper: load board elements from DB
 const loadBoardElements = async (boardId) => {
   const result = await db.query(
-    'SELECT id, data FROM elements WHERE board_id = $1 ORDER BY created_at ASC',
+    'SELECT id, page_id, data FROM elements WHERE board_id = $1 ORDER BY created_at ASC',
     [boardId]
   );
-  return result.rows.map(r => ({ id: r.id, ...r.data }));
+  return result.rows.map(r => ({ id: r.id, pageId: r.page_id, ...r.data }));
 };
 
 // Helper: upsert an element into DB
 const upsertElement = async (boardId, element) => {
-  const { id, ...data } = element;
+  const { id, pageId, ...data } = element;
   await db.query(
-    `INSERT INTO elements (id, board_id, data)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (id) DO UPDATE SET data = $3, updated_at = NOW()`,
-    [id, boardId, JSON.stringify(data)]
+    `INSERT INTO elements (id, board_id, page_id, data)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (id) DO UPDATE SET data = $4, page_id = $3, updated_at = NOW()`,
+    [id, boardId, pageId || null, JSON.stringify(data)]
   );
 };
 
@@ -117,11 +119,25 @@ io.on('connection', (socket) => {
             'INSERT INTO board_members (board_id, user_id, role) VALUES ($1, $2, $3)',
             [boardId, socket.user.id, 'editor']
           );
+          socket.role = 'editor';
         }
+      } else {
+        socket.role = existing.rows[0].role;
       }
     } catch (err) {
       // Board might not exist in DB yet (legacy boards) — that's ok
       console.error('Auto-join check failed:', err.message);
+      socket.role = 'editor'; // fallback
+    }
+
+    socket.emit('role', socket.role);
+
+    // Send board pages
+    try {
+      const pagesRes = await db.query('SELECT * FROM pages WHERE board_id = $1 ORDER BY order_index ASC', [boardId]);
+      socket.emit('board-pages', pagesRes.rows);
+    } catch (err) {
+      console.error('Failed to load board pages:', err.message);
     }
 
     // Send board state from DB
@@ -139,6 +155,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('update-element', async (data) => {
+    if (socket.role === 'viewer') return;
     const { boardId, element } = data;
 
     // Persist to DB (fire and forget for speed, errors are logged)
@@ -156,6 +173,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('set-elements', async (data) => {
+    if (socket.role === 'viewer') return;
     const { boardId, elements } = data;
 
     // Replace all elements in DB
@@ -172,6 +190,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('delete-element', async (data) => {
+    if (socket.role === 'viewer') return;
     const { boardId, elementId } = data;
 
     deleteElement(elementId).catch(err =>
@@ -182,6 +201,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('clear-canvas', async (boardId) => {
+    if (socket.role === 'viewer') return;
     clearBoardElements(boardId).catch(err =>
       console.error('Failed to clear elements:', err.message)
     );
@@ -189,6 +209,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('cursor-move', (data) => {
+    if (socket.role === 'viewer') return;
     const { boardId, cursor } = data;
     socket.to(boardId).volatile.emit('cursor-move', {
       userId: socket.user.id,
@@ -198,6 +219,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('laser-draw', (data) => {
+    if (socket.role === 'viewer') return;
     const { boardId, laserPoint } = data;
     socket.to(boardId).volatile.emit('laser-draw', {
       userId: socket.user.id,
@@ -217,6 +239,32 @@ io.on('connection', (socket) => {
     };
     socket.to(boardId).emit('chat-message', message);
     socket.emit('chat-message', message);
+  });
+
+  // Pages events
+  socket.on('add-page', async (data) => {
+    if (socket.role === 'viewer') return;
+    const { boardId, title, orderIndex } = data;
+    try {
+      const res = await db.query(
+        'INSERT INTO pages (board_id, title, order_index) VALUES ($1, $2, $3) RETURNING *',
+        [boardId, title || 'New Page', orderIndex || 0]
+      );
+      io.in(boardId).emit('page-added', res.rows[0]);
+    } catch (err) {
+      console.error('Failed to add page:', err.message);
+    }
+  });
+
+  socket.on('delete-page', async (data) => {
+    if (socket.role === 'viewer') return;
+    const { boardId, pageId } = data;
+    try {
+      await db.query('DELETE FROM pages WHERE id = $1', [pageId]);
+      io.in(boardId).emit('page-deleted', pageId);
+    } catch (err) {
+      console.error('Failed to delete page:', err.message);
+    }
   });
 
   socket.on('disconnect', async () => {

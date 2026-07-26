@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { Stage, Layer, Line, Rect, Ellipse, Text, Transformer, Group, Image as KonvaImage } from 'react-konva';
 import { v4 as uuidv4 } from 'uuid';
 import { useAuth } from '../context/AuthContext';
+import { jsPDF } from 'jspdf';
 
 const stringToColor = (str) => {
   let hash = 0;
@@ -21,7 +22,7 @@ const URLImage = ({ el, commonProps }) => {
   return <KonvaImage {...commonProps} image={image} width={el.width} height={el.height} />;
 };
 
-export default function Canvas({ socket, boardId }) {
+export default function Canvas({ socket, boardId, role, activePageId }) {
   const { user, token } = useAuth();
   const [elements, setElements] = useState([]);
   
@@ -99,11 +100,14 @@ export default function Canvas({ socket, boardId }) {
         img.onload = () => {
           const newElement = {
             id: uuidv4(), tool: 'image', src: data.url,
+            pageId: activePageId,
             x: center.x - img.width / 4, y: center.y - img.height / 4,
             width: img.width / 2, height: img.height / 2, // scale down by default
             rotation: 0, scaleX: 1, scaleY: 1
           };
           setElements(prev => [...prev, newElement]);
+          setTool('select');
+          setSelectedId(newElement.id);
           socket.emit('update-element', { boardId, element: newElement });
           recordAction({ type: 'add', element: newElement });
         };
@@ -115,23 +119,30 @@ export default function Canvas({ socket, boardId }) {
 
   // Handle Export (triggered from Whiteboard.jsx)
   useEffect(() => {
-    const handleExport = () => {
+    const handleExport = (e) => {
+      const format = e.detail?.format || 'png';
       if (stageRef.current) {
         setSelectedId(null);
         setTimeout(() => {
-          const uri = stageRef.current.toDataURL({ pixelRatio: 2, bg: '#09090b' });
-          const link = document.createElement('a');
-          link.download = `board-${boardId}.png`;
-          link.href = uri;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
+          const uri = stageRef.current.toDataURL({ pixelRatio: 2, bg: '#09090b', mimeType: format === 'jpeg' ? 'image/jpeg' : 'image/png' });
+          if (format === 'pdf') {
+            const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: [stageSize.width, stageSize.height] });
+            pdf.addImage(uri, 'PNG', 0, 0, stageSize.width, stageSize.height);
+            pdf.save(`board-${boardId}.pdf`);
+          } else {
+            const link = document.createElement('a');
+            link.download = `board-${boardId}.${format}`;
+            link.href = uri;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+          }
         }, 50);
       }
     };
     window.addEventListener('export-canvas', handleExport);
     return () => window.removeEventListener('export-canvas', handleExport);
-  }, [boardId]);
+  }, [boardId, stageSize]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -228,6 +239,7 @@ export default function Canvas({ socket, boardId }) {
 
   useEffect(() => {
     const handleKeyDown = (e) => {
+      if (role === 'viewer') return;
       if (editingText) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         if (e.shiftKey) redo(); else undo();
@@ -282,6 +294,10 @@ export default function Canvas({ socket, boardId }) {
 
   const handleMouseDown = (e) => {
     if (e.evt.button === 1 || e.evt.button === 2) return; // Ignore middle/right clicks
+    if (role === 'viewer') {
+      if (tool === 'select') checkDeselect(e);
+      return;
+    }
     
     if (tool === 'select' || tool === 'pan') {
       if (tool === 'select') checkDeselect(e);
@@ -301,6 +317,7 @@ export default function Canvas({ socket, boardId }) {
       const newElement = {
         id: uuidv4(),
         tool,
+        pageId: activePageId,
         x: pos.x, y: pos.y,
         text: '',
         color: isSticky ? '#fef08a' : color, // Default yellow for sticky
@@ -318,8 +335,11 @@ export default function Canvas({ socket, boardId }) {
     
     const newElement = {
       id: uuidv4(), tool,
+      pageId: activePageId,
       points: [pos.x, pos.y],
-      x: pos.x, y: pos.y, width: 0, height: 0,
+      x: (tool === 'pen' || tool === 'eraser' || tool === 'line') ? 0 : pos.x,
+      y: (tool === 'pen' || tool === 'eraser' || tool === 'line') ? 0 : pos.y,
+      width: 0, height: 0,
       color: tool === 'eraser' ? '#09090b' : color, // Match obsidian background for eraser
       strokeWidth: tool === 'eraser' ? 20 : lineWidth,
       rotation: 0, scaleX: 1, scaleY: 1
@@ -458,10 +478,11 @@ export default function Canvas({ socket, boardId }) {
 
   return (
     <div ref={containerRef} className="w-full h-full relative canvas-grid-bg overflow-hidden" 
-         style={{ cursor: tool === 'select' ? 'default' : tool === 'pan' ? 'grab' : (tool === 'text' || tool === 'sticky') ? 'text' : 'crosshair' }}>
+         style={{ cursor: (tool === 'select' || role === 'viewer') ? 'default' : tool === 'pan' ? 'grab' : (tool === 'text' || tool === 'sticky') ? 'text' : 'crosshair' }}>
       
       {/* Floating Left Sidebar - Obsidian Toolbar */}
-      <div className="absolute left-4 top-1/2 -translate-y-1/2 flex flex-col gap-2 z-40 pointer-events-none">
+      {role !== 'viewer' && (
+        <div className="absolute left-4 top-1/2 -translate-y-1/2 flex flex-col gap-2 z-40 pointer-events-none">
         <div className="bg-surface border border-outline-variant rounded-xl p-1 shadow-obsidian flex flex-col gap-1 pointer-events-auto w-12 items-center">
           
           <ToolButton id="select" icon="near_me" title="Select" />
@@ -503,6 +524,7 @@ export default function Canvas({ socket, boardId }) {
           <button onClick={clearCanvas} className="w-10 h-10 rounded-lg flex items-center justify-center text-error hover:bg-error-container transition-colors" title="Clear Canvas"><span className="material-symbols-outlined text-[20px]">delete</span></button>
         </div>
       </div>
+      )}
 
       {/* Text Editing Overlay */}
       {editingText && (
@@ -573,8 +595,8 @@ export default function Canvas({ socket, boardId }) {
         onTouchStart={handleMouseDown} onTouchMove={handleMouseMove} onTouchEnd={handleMouseUp}
       >
         <Layer>
-          {elements.map((el) => renderElement(el))}
-          {selectedId && tool === 'select' && (
+          {elements.filter(el => el.pageId === activePageId || !el.pageId).map((el) => renderElement(el))}
+          {selectedId && tool === 'select' && role !== 'viewer' && (
             <Transformer 
               ref={trRef} 
               boundBoxFunc={(oldBox, newBox) => (Math.abs(newBox.width) < 5 || Math.abs(newBox.height) < 5) ? oldBox : newBox}
