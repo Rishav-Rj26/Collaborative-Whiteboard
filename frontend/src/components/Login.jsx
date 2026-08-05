@@ -26,7 +26,7 @@ export default function Login() {
       }
       navigate('/');
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'An unexpected error occurred. Please try again.');
     } finally {
       setSubmitting(false);
     }

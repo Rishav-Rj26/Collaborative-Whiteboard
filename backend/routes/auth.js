@@ -39,8 +39,11 @@ router.post('/register', async (req, res) => {
 
     res.status(201).json({ user, token });
   } catch (err) {
-    console.error('Registration error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Registration error:', err.stack || err);
+    if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
+      return res.status(503).json({ error: 'Database service is temporarily unavailable. Please try again later.' });
+    }
+    res.status(500).json({ error: 'Something went wrong during registration. Please try again.' });
   }
 });
 
@@ -76,8 +79,11 @@ router.post('/login', async (req, res) => {
       token,
     });
   } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Login error:', err.stack || err);
+    if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND') {
+      return res.status(503).json({ error: 'Database service is temporarily unavailable. Please try again later.' });
+    }
+    res.status(500).json({ error: 'Something went wrong during login. Please try again.' });
   }
 });
 

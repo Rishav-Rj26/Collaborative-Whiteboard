@@ -35,13 +35,28 @@ export function AuthProvider({ children }) {
   }, [token]);
 
   const login = async (email, password) => {
-    const res = await fetch(`${API_URL}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
+    let res;
+    try {
+      res = await fetch(`${API_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+    } catch {
+      throw new Error('Unable to connect to the server. Please check your connection and try again.');
+    }
+
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error('Received an unexpected response from the server. Please try again.');
+    }
+
+    if (!res.ok) {
+      throw new Error(data.error || 'Login failed. Please try again.');
+    }
+
     localStorage.setItem('token', data.token);
     setToken(data.token);
     setUser(data.user);
@@ -49,13 +64,28 @@ export function AuthProvider({ children }) {
   };
 
   const register = async (name, email, password) => {
-    const res = await fetch(`${API_URL}/auth/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
+    let res;
+    try {
+      res = await fetch(`${API_URL}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password }),
+      });
+    } catch {
+      throw new Error('Unable to connect to the server. Please check your connection and try again.');
+    }
+
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error('Received an unexpected response from the server. Please try again.');
+    }
+
+    if (!res.ok) {
+      throw new Error(data.error || 'Registration failed. Please try again.');
+    }
+
     localStorage.setItem('token', data.token);
     setToken(data.token);
     setUser(data.user);
