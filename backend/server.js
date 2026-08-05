@@ -23,7 +23,18 @@ const storage = multer.diskStorage({
     cb(null, uniqueSuffix + path.extname(file.originalname));
   }
 });
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only JPEG, PNG, GIF, and WEBP are allowed.'));
+    }
+  },
+  limits: { fileSize: 5 * 1024 * 1024 }
+});
 
 const app = express();
 const server = http.createServer(app);
@@ -167,6 +178,17 @@ io.on('connection', (socket) => {
     db.query('UPDATE boards SET updated_at = NOW() WHERE id = $1', [boardId]).catch(() => {});
 
     socket.to(boardId).emit('update-element', {
+      userId: socket.user.id,
+      element
+    });
+  });
+
+  socket.on('draw-progress', (data) => {
+    if (socket.role === 'viewer') return;
+    const { boardId, element } = data;
+    
+    // Broadcast immediately without writing to DB
+    socket.to(boardId).volatile.emit('update-element', {
       userId: socket.user.id,
       element
     });

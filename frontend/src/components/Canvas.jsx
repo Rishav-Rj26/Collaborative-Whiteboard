@@ -3,13 +3,8 @@ import { Stage, Layer, Line, Rect, Ellipse, Text, Transformer, Group, Image as K
 import { v4 as uuidv4 } from 'uuid';
 import { useAuth } from '../context/AuthContext';
 import { jsPDF } from 'jspdf';
-
-const stringToColor = (str) => {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) { hash = str.charCodeAt(i) + ((hash << 5) - hash); }
-  const colors = ['#0ea5e9', '#f43f5e', '#f59e0b', '#10b981', '#8b5cf6'];
-  return colors[Math.abs(hash) % colors.length];
-};
+import useCanvasSocket, { stringToColor } from '../hooks/useCanvasSocket';
+import useHistory from '../hooks/useHistory';
 
 const URLImage = ({ el, commonProps }) => {
   const [image, setImage] = useState(null);
@@ -24,11 +19,10 @@ const URLImage = ({ el, commonProps }) => {
 
 export default function Canvas({ socket, boardId, role, activePageId }) {
   const { user, token } = useAuth();
-  const [elements, setElements] = useState([]);
   
-  // Per-user action stacks for undo/redo
-  const [undoStack, setUndoStack] = useState([]);
-  const [redoStack, setRedoStack] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
+  const { elements, setElements, remoteCursors, laserPoints, setLaserPoints } = useCanvasSocket(socket, selectedId, setSelectedId);
+  const { undoStack, redoStack, recordAction, undo, redo, clearHistory } = useHistory(socket, boardId, elements, setElements, selectedId, setSelectedId);
   
   const [tool, setTool] = useState('select');
   const [color, setColor] = useState('#a78bfa'); // Obsidian primary color
@@ -38,11 +32,8 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
   
   const [stageSize, setStageSize] = useState({ width: window.innerWidth, height: window.innerHeight });
-  const [remoteCursors, setRemoteCursors] = useState({});
-  const [selectedId, setSelectedId] = useState(null);
   
   const [editingText, setEditingText] = useState(null); 
-  const [laserPoints, setLaserPoints] = useState({});
   const fileInputRef = useRef(null);
   
   const containerRef = useRef(null);
@@ -50,29 +41,7 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
   const trRef = useRef(null);
   const lastElementBeforeTransform = useRef(null);
 
-  // Cleanup laser points older than 1 second
-  useEffect(() => {
-    let animationFrameId;
-    const animate = () => {
-      const now = Date.now();
-      let updated = false;
-      setLaserPoints(prev => {
-        const next = { ...prev };
-        for (const [uid, points] of Object.entries(next)) {
-          const filtered = points.filter(p => now - p.timestamp < 1000);
-          if (filtered.length !== points.length) {
-            updated = true;
-            if (filtered.length === 0) delete next[uid];
-            else next[uid] = filtered;
-          }
-        }
-        return updated ? next : prev;
-      });
-      animationFrameId = requestAnimationFrame(animate);
-    };
-    animate();
-    return () => cancelAnimationFrame(animationFrameId);
-  }, []);
+
 
   const handleImageUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -155,84 +124,9 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  useEffect(() => {
-    if (!socket) return;
-    socket.on('board-state', (serverElements) => setElements(serverElements));
-    socket.on('update-element', ({ element }) => {
-      setElements(prev => {
-        const index = prev.findIndex(e => e.id === element.id);
-        if (index !== -1) {
-          const newElements = [...prev];
-          newElements[index] = element;
-          return newElements;
-        }
-        return [...prev, element];
-      });
-    });
-    socket.on('delete-element', (elementId) => {
-      setElements(prev => prev.filter(e => e.id !== elementId));
-      if (selectedId === elementId) setSelectedId(null);
-    });
-    socket.on('cursor-move', (data) => setRemoteCursors(prev => ({ ...prev, [data.userId]: data })));
-    socket.on('cursor-remove', (userId) => {
-      setRemoteCursors(prev => { const next = { ...prev }; delete next[userId]; return next; });
-    });
-    socket.on('laser-draw', (data) => {
-      setLaserPoints(prev => ({
-        ...prev,
-        [data.userId]: [...(prev[data.userId] || []), { x: data.x, y: data.y, timestamp: Date.now(), color: stringToColor(data.name) }]
-      }));
-    });
-    return () => {
-      socket.off('board-state'); socket.off('update-element'); socket.off('delete-element');
-      socket.off('cursor-move'); socket.off('cursor-remove'); socket.off('laser-draw');
-    };
-  }, [socket, selectedId]);
-
-  const recordAction = (action) => {
-    setUndoStack(prev => [...prev, action]);
-    setRedoStack([]); 
-  };
-
-  const undo = useCallback(() => {
-    if (undoStack.length === 0) return;
-    const action = undoStack[undoStack.length - 1];
-    setUndoStack(prev => prev.slice(0, -1));
-    setRedoStack(prev => [...prev, action]);
-    if (action.type === 'add') {
-      socket.emit('delete-element', { boardId, elementId: action.element.id });
-      setElements(prev => prev.filter(e => e.id !== action.element.id));
-      if (selectedId === action.element.id) setSelectedId(null);
-    } else if (action.type === 'delete') {
-      socket.emit('update-element', { boardId, element: action.element });
-      setElements(prev => [...prev, action.element]);
-    } else if (action.type === 'update') {
-      socket.emit('update-element', { boardId, element: action.before });
-      setElements(prev => prev.map(e => e.id === action.before.id ? action.before : e));
-    }
-  }, [undoStack, socket, boardId, selectedId]);
-
-  const redo = useCallback(() => {
-    if (redoStack.length === 0) return;
-    const action = redoStack[redoStack.length - 1];
-    setRedoStack(prev => prev.slice(0, -1));
-    setUndoStack(prev => [...prev, action]);
-    if (action.type === 'add') {
-      socket.emit('update-element', { boardId, element: action.element });
-      setElements(prev => [...prev, action.element]);
-    } else if (action.type === 'delete') {
-      socket.emit('delete-element', { boardId, elementId: action.element.id });
-      setElements(prev => prev.filter(e => e.id !== action.element.id));
-      if (selectedId === action.element.id) setSelectedId(null);
-    } else if (action.type === 'update') {
-      socket.emit('update-element', { boardId, element: action.after });
-      setElements(prev => prev.map(e => e.id === action.after.id ? action.after : e));
-    }
-  }, [redoStack, socket, boardId, selectedId]);
-
   const clearCanvas = () => {
     if (window.confirm("Are you sure you want to clear the canvas? This cannot be undone.")) {
-      setElements([]); setUndoStack([]); setRedoStack([]); setSelectedId(null);
+      setElements([]); clearHistory(); setSelectedId(null);
       socket.emit('clear-canvas', boardId);
     }
   };
@@ -384,7 +278,7 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
       }
       const newElements = [...prev];
       newElements[newElements.length - 1] = lastElement;
-      socket.emit('update-element', { boardId, element: lastElement });
+      socket.emit('draw-progress', { boardId, element: lastElement });
       return newElements;
     });
   };
@@ -395,6 +289,8 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
       if (tool === 'laser') return; // Do not record action for laser
       const lastElement = elements[elements.length - 1];
       recordAction({ type: 'add', element: lastElement });
+      // Finally save the finished stroke/shape to the DB
+      socket.emit('update-element', { boardId, element: lastElement });
     }
   };
 
