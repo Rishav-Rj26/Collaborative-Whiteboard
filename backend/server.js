@@ -10,6 +10,8 @@ const boardRoutes = require('./routes/boards');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { canEdit, getBoardRole } = require('./lib/boardAccess');
+const { validChatMessage } = require('./lib/validation');
 
 const uploadsDir = path.join(__dirname, 'public', 'uploads');
 if (!fs.existsSync(uploadsDir)) {
@@ -38,18 +40,20 @@ const upload = multer({
 
 const app = express();
 const server = http.createServer(app);
+const allowedOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173';
 
 const io = new Server(server, {
   cors: {
-    origin: '*',
+    origin: allowedOrigin,
     methods: ['GET', 'POST']
   }
 });
 
 app.set('io', io);
+app.set('dbQuery', db.query);
 
-app.use(cors());
-app.use(express.json({ limit: '50mb' })); // Increased limit for larger boards
+app.use(cors({ origin: allowedOrigin }));
+app.use(express.json({ limit: '2mb' }));
 
 // Serve uploaded files statically
 app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads')));
@@ -100,8 +104,8 @@ const upsertElement = async (boardId, element) => {
 };
 
 // Helper: delete an element from DB
-const deleteElement = async (elementId) => {
-  await db.query('DELETE FROM elements WHERE id = $1', [elementId]);
+const deleteElement = async (boardId, elementId) => {
+  await db.query('DELETE FROM elements WHERE id = $1 AND board_id = $2', [elementId, boardId]);
 };
 
 // Helper: delete all elements for a board
@@ -109,36 +113,27 @@ const clearBoardElements = async (boardId) => {
   await db.query('DELETE FROM elements WHERE board_id = $1', [boardId]);
 };
 
+const socketCanAccessBoard = (socket, boardId, needsEdit = false) =>
+  socket.boardId === boardId && socket.rooms.has(boardId) && (!needsEdit || canEdit(socket.role));
+
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.user.name} (${socket.user.id})`);
 
   socket.on('join-board', async (boardId) => {
-    socket.join(boardId);
-    socket.boardId = boardId;
-
-    // Auto-add user as member if not already (for shared links)
     try {
-      const existing = await db.query(
-        'SELECT * FROM board_members WHERE board_id = $1 AND user_id = $2',
-        [boardId, socket.user.id]
-      );
-      if (existing.rows.length === 0) {
-        // Check board exists first
-        const board = await db.query('SELECT id FROM boards WHERE id = $1', [boardId]);
-        if (board.rows.length > 0) {
-          await db.query(
-            'INSERT INTO board_members (board_id, user_id, role) VALUES ($1, $2, $3)',
-            [boardId, socket.user.id, 'editor']
-          );
-          socket.role = 'editor';
-        }
-      } else {
-        socket.role = existing.rows[0].role;
+      const role = await getBoardRole(db.query, boardId, socket.user.id);
+      if (!role) {
+        socket.emit('board-access-denied');
+        return;
       }
+      if (socket.boardId && socket.boardId !== boardId) socket.leave(socket.boardId);
+      socket.join(boardId);
+      socket.boardId = boardId;
+      socket.role = role;
     } catch (err) {
-      // Board might not exist in DB yet (legacy boards) — that's ok
-      console.error('Auto-join check failed:', err.message);
-      socket.role = 'editor'; // fallback
+      console.error('Board access check failed:', err.message);
+      socket.emit('board-access-denied');
+      return;
     }
 
     socket.emit('role', socket.role);
@@ -166,8 +161,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('update-element', async (data) => {
-    if (socket.role === 'viewer') return;
     const { boardId, element } = data;
+    if (!socketCanAccessBoard(socket, boardId, true) || !element?.id) return;
 
     // Persist to DB (fire and forget for speed, errors are logged)
     upsertElement(boardId, element).catch(err =>
@@ -184,8 +179,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('draw-progress', (data) => {
-    if (socket.role === 'viewer') return;
     const { boardId, element } = data;
+    if (!socketCanAccessBoard(socket, boardId, true)) return;
     
     // Broadcast immediately without writing to DB
     socket.to(boardId).volatile.emit('update-element', {
@@ -195,15 +190,21 @@ io.on('connection', (socket) => {
   });
 
   socket.on('set-elements', async (data) => {
-    if (socket.role === 'viewer') return;
     const { boardId, elements } = data;
+    if (!socketCanAccessBoard(socket, boardId, true) || !Array.isArray(elements)) return;
 
-    // Replace all elements in DB
+    // Replace all elements atomically so a failed update cannot leave a partial board.
     try {
-      await clearBoardElements(boardId);
-      for (const el of elements) {
-        await upsertElement(boardId, el);
-      }
+      await db.transaction(async (client) => {
+        await client.query('DELETE FROM elements WHERE board_id = $1', [boardId]);
+        for (const el of elements) {
+          const { id, pageId, ...data } = el;
+          await client.query(
+            'INSERT INTO elements (id, board_id, page_id, data) VALUES ($1, $2, $3, $4)',
+            [id, boardId, pageId || null, JSON.stringify(data)]
+          );
+        }
+      });
     } catch (err) {
       console.error('Failed to set elements:', err.message);
     }
@@ -212,10 +213,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('delete-element', async (data) => {
-    if (socket.role === 'viewer') return;
     const { boardId, elementId } = data;
+    if (!socketCanAccessBoard(socket, boardId, true)) return;
 
-    deleteElement(elementId).catch(err =>
+    deleteElement(boardId, elementId).catch(err =>
       console.error('Failed to delete element:', err.message)
     );
 
@@ -223,7 +224,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('clear-canvas', async (boardId) => {
-    if (socket.role === 'viewer') return;
+    if (!socketCanAccessBoard(socket, boardId, true)) return;
     clearBoardElements(boardId).catch(err =>
       console.error('Failed to clear elements:', err.message)
     );
@@ -231,8 +232,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('cursor-move', (data) => {
-    if (socket.role === 'viewer') return;
     const { boardId, cursor } = data;
+    if (!socketCanAccessBoard(socket, boardId, true)) return;
     socket.to(boardId).volatile.emit('cursor-move', {
       userId: socket.user.id,
       name: socket.user.name,
@@ -241,8 +242,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('laser-draw', (data) => {
-    if (socket.role === 'viewer') return;
     const { boardId, laserPoint } = data;
+    if (!socketCanAccessBoard(socket, boardId, true)) return;
     socket.to(boardId).volatile.emit('laser-draw', {
       userId: socket.user.id,
       name: socket.user.name,
@@ -252,6 +253,7 @@ io.on('connection', (socket) => {
 
   socket.on('chat-message', (data) => {
     const { boardId, text } = data;
+    if (!socketCanAccessBoard(socket, boardId) || !validChatMessage(text)) return;
     const message = {
       id: Date.now().toString(),
       userId: socket.user.id,
@@ -265,8 +267,8 @@ io.on('connection', (socket) => {
 
   // Pages events
   socket.on('add-page', async (data) => {
-    if (socket.role === 'viewer') return;
     const { boardId, title, orderIndex } = data;
+    if (!socketCanAccessBoard(socket, boardId, true)) return;
     try {
       const res = await db.query(
         'INSERT INTO pages (board_id, title, order_index) VALUES ($1, $2, $3) RETURNING *',
@@ -279,10 +281,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('delete-page', async (data) => {
-    if (socket.role === 'viewer') return;
     const { boardId, pageId } = data;
+    if (!socketCanAccessBoard(socket, boardId, true)) return;
     try {
-      await db.query('DELETE FROM pages WHERE id = $1', [pageId]);
+      await db.query('DELETE FROM pages WHERE id = $1 AND board_id = $2', [pageId, boardId]);
       io.in(boardId).emit('page-deleted', pageId);
     } catch (err) {
       console.error('Failed to delete page:', err.message);

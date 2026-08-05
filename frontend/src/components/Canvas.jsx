@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Stage, Layer, Line, Rect, Ellipse, Text, Transformer, Group, Image as KonvaImage } from 'react-konva';
 import { v4 as uuidv4 } from 'uuid';
 import { useAuth } from '../context/AuthContext';
@@ -26,7 +26,7 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
   
   const [tool, setTool] = useState('select');
   const [color, setColor] = useState('#a78bfa'); // Obsidian primary color
-  const [lineWidth, setLineWidth] = useState(2);
+  const [lineWidth] = useState(2);
   const [isDrawing, setIsDrawing] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });

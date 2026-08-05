@@ -10,7 +10,7 @@ const SOCKET_SERVER_URL = 'http://localhost:3001';
 export default function Whiteboard() {
   const { boardId } = useParams();
   const navigate = useNavigate();
-  const { user, token } = useAuth();
+  const { token } = useAuth();
   const [socket, setSocket] = useState(null);
   const [activeUsers, setActiveUsers] = useState([]);
   const [copied, setCopied] = useState(false);
@@ -42,19 +42,19 @@ export default function Whiteboard() {
     newSocket.on('role', (r) => setRole(r));
     newSocket.on('board-pages', (p) => {
       setPages(p);
-      if (p.length > 0 && !activePageId) setActivePageId(p[0].id);
+      setActivePageId(current => current || p[0]?.id || null);
     });
     newSocket.on('page-added', (p) => setPages(prev => [...prev, p]));
     newSocket.on('page-deleted', (pid) => {
       setPages(prev => prev.filter(p => p.id !== pid));
-      if (activePageId === pid) setActivePageId(null);
+      setActivePageId(current => current === pid ? null : current);
     });
     newSocket.on('chat-message', (msg) => {
       setMessages(prev => [...prev, msg]);
       if (!chatOpenRef.current) setUnreadCount(prev => prev + 1);
     });
     return () => newSocket.disconnect();
-  }, [boardId, token, activePageId]);
+  }, [boardId, token]);
 
   // Ensure activePageId is valid if pages load later
   useEffect(() => {

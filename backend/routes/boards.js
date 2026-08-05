@@ -2,6 +2,7 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../db');
 const { verifyToken } = require('../middleware/auth');
+const { VALID_ROLES, requireBoardRole } = require('../lib/boardAccess');
 
 const router = express.Router();
 
@@ -110,7 +111,7 @@ router.post('/:id/join', async (req, res) => {
 });
 
 // GET /api/boards/:id/members — list all members of a board
-router.get('/:id/members', async (req, res) => {
+router.get('/:id/members', requireBoardRole, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await db.query(
@@ -132,6 +133,7 @@ router.put('/:id/members/:userId', async (req, res) => {
   try {
     const { id, userId } = req.params;
     const { role } = req.body;
+    if (!VALID_ROLES.has(role)) return res.status(400).json({ error: 'Invalid role' });
 
     // Verify current user is owner
     const ownerCheck = await db.query('SELECT role FROM board_members WHERE board_id = $1 AND user_id = $2', [id, req.user.id]);
@@ -152,7 +154,7 @@ router.put('/:id/members/:userId', async (req, res) => {
 });
 
 // GET /api/boards/:id/snapshots — get board history
-router.get('/:id/snapshots', async (req, res) => {
+router.get('/:id/snapshots', requireBoardRole, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await db.query('SELECT id, created_at FROM board_snapshots WHERE board_id = $1 ORDER BY created_at DESC', [id]);
