@@ -1,10 +1,32 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { Stage, Layer, Line, Rect, Ellipse, Text, Transformer, Group, Image as KonvaImage } from 'react-konva';
 import { v4 as uuidv4 } from 'uuid';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { jsPDF } from 'jspdf';
 import useCanvasSocket, { stringToColor } from '../hooks/useCanvasSocket';
 import useHistory from '../hooks/useHistory';
+import ConfirmModal from './ConfirmModal';
+
+// ── Tool shortcut map ──
+const TOOL_SHORTCUTS = {
+  v: 'select', h: 'pan', p: 'pen', l: 'line',
+  r: 'rect', o: 'ellipse', e: 'eraser',
+  t: 'text', s: 'sticky', g: 'laser',
+};
+
+const SHORTCUT_LABELS = {
+  select: 'V', pan: 'H', pen: 'P', line: 'L',
+  rect: 'R', ellipse: 'O', eraser: 'E',
+  text: 'T', sticky: 'S', laser: 'G',
+};
+
+// ── Stroke width presets ──
+const STROKE_PRESETS = [
+  { label: 'S', value: 2 },
+  { label: 'M', value: 4 },
+  { label: 'L', value: 8 },
+];
 
 const URLImage = ({ el, commonProps }) => {
   const [image, setImage] = useState(null);
@@ -19,14 +41,15 @@ const URLImage = ({ el, commonProps }) => {
 
 export default function Canvas({ socket, boardId, role, activePageId }) {
   const { user, token } = useAuth();
+  const toast = useToast();
   
   const [selectedId, setSelectedId] = useState(null);
   const { elements, setElements, remoteCursors, laserPoints, setLaserPoints } = useCanvasSocket(socket, selectedId, setSelectedId);
   const { undoStack, redoStack, recordAction, undo, redo, clearHistory } = useHistory(socket, boardId, elements, setElements, selectedId, setSelectedId);
   
   const [tool, setTool] = useState('select');
-  const [color, setColor] = useState('#a78bfa'); // Obsidian primary color
-  const [lineWidth] = useState(2);
+  const [color, setColor] = useState('#a78bfa');
+  const [lineWidth, setLineWidth] = useState(2);
   const [isDrawing, setIsDrawing] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
@@ -41,13 +64,32 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
   const trRef = useRef(null);
   const lastElementBeforeTransform = useRef(null);
 
+  // ── Confirm modal state ──
+  const [confirmModal, setConfirmModal] = useState({ open: false, title: '', message: '', onConfirm: null });
 
+  // ── Thumbnail debounce ──
+  const thumbnailTimerRef = useRef(null);
+
+  const saveThumbnail = useCallback(() => {
+    if (!stageRef.current || !socket) return;
+    try {
+      const uri = stageRef.current.toDataURL({ pixelRatio: 0.15 });
+      socket.emit('save-thumbnail', { boardId, thumbnail: uri });
+    } catch {
+      // Silently ignore thumbnail errors
+    }
+  }, [boardId, socket]);
+
+  const debouncedThumbnail = useCallback(() => {
+    if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current);
+    thumbnailTimerRef.current = setTimeout(saveThumbnail, 2000);
+  }, [saveThumbnail]);
 
   const handleImageUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     
-    e.target.value = ''; // Reset input
+    e.target.value = '';
     const formData = new FormData();
     formData.append('image', file);
     
@@ -71,7 +113,7 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
             id: uuidv4(), tool: 'image', src: data.url,
             pageId: activePageId,
             x: center.x - img.width / 4, y: center.y - img.height / 4,
-            width: img.width / 2, height: img.height / 2, // scale down by default
+            width: img.width / 2, height: img.height / 2,
             rotation: 0, scaleX: 1, scaleY: 1
           };
           setElements(prev => [...prev, newElement]);
@@ -79,10 +121,13 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
           setSelectedId(newElement.id);
           socket.emit('update-element', { boardId, element: newElement });
           recordAction({ type: 'add', element: newElement });
+          toast.success('Image uploaded');
+          debouncedThumbnail();
         };
       }
     } catch (err) {
       console.error('Upload failed', err);
+      toast.error('Image upload failed');
     }
   };
 
@@ -106,42 +151,81 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
             link.click();
             document.body.removeChild(link);
           }
+          toast.success(`Exported as ${format.toUpperCase()}`);
         }, 50);
       }
     };
     window.addEventListener('export-canvas', handleExport);
     return () => window.removeEventListener('export-canvas', handleExport);
-  }, [boardId, stageSize]);
+  }, [boardId, stageSize, toast]);
 
   useEffect(() => {
+    if (!containerRef.current) return;
     const handleResize = () => {
       if (containerRef.current) {
         setStageSize({ width: containerRef.current.clientWidth, height: containerRef.current.clientHeight });
       }
     };
+    
+    const observer = new ResizeObserver(handleResize);
+    observer.observe(containerRef.current);
+    
     handleResize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    
+    return () => observer.disconnect();
   }, []);
 
+  // ── Clear canvas with styled modal ──
   const clearCanvas = () => {
-    if (window.confirm("Are you sure you want to clear the canvas? This cannot be undone.")) {
-      setElements([]); clearHistory(); setSelectedId(null);
-      socket.emit('clear-canvas', boardId);
-    }
+    setConfirmModal({
+      open: true,
+      title: 'Clear Canvas',
+      message: 'Are you sure you want to clear the entire canvas? This action cannot be undone.',
+      onConfirm: () => {
+        setElements([]); clearHistory(); setSelectedId(null);
+        socket.emit('clear-canvas', boardId);
+        setConfirmModal(prev => ({ ...prev, open: false }));
+        toast.info('Canvas cleared');
+        debouncedThumbnail();
+      }
+    });
   };
 
+  // ── Keyboard shortcuts ──
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (role === 'viewer') return;
       if (editingText) return;
+
+      // Undo/Redo
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         if (e.shiftKey) redo(); else undo();
         e.preventDefault();
+        return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
         redo(); e.preventDefault();
+        return;
       }
+
+      // Zoom shortcuts
+      if ((e.ctrlKey || e.metaKey) && (e.key === '0')) {
+        setZoom(1); setStagePos({ x: 0, y: 0 });
+        e.preventDefault();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
+        setZoom(prev => Math.min(prev * 1.2, 5));
+        e.preventDefault();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === '-') {
+        setZoom(prev => Math.max(prev / 1.2, 0.1));
+        e.preventDefault();
+        return;
+      }
+
+      // Delete selection
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
         const el = elements.find(e => e.id === selectedId);
         if (el) {
@@ -149,17 +233,32 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
           setElements(prev => prev.filter(e => e.id !== selectedId));
           socket.emit('delete-element', { boardId, elementId: selectedId });
           setSelectedId(null);
+          debouncedThumbnail();
+        }
+        return;
+      }
+
+      // Tool shortcuts (only when no modifier keys)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        const toolId = TOOL_SHORTCUTS[e.key.toLowerCase()];
+        if (toolId) {
+          setTool(toolId);
+          setSelectedId(null);
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedId, editingText, boardId, socket, undo, redo, elements]);
+  }, [selectedId, editingText, boardId, socket, undo, redo, elements, role, debouncedThumbnail]);
+
+  // ── Zoom helpers ──
+  const zoomIn = () => setZoom(prev => Math.min(prev * 1.2, 5));
+  const zoomOut = () => setZoom(prev => Math.max(prev / 1.2, 0.1));
+  const zoomReset = () => { setZoom(1); setStagePos({ x: 0, y: 0 }); };
 
   const handleWheel = (e) => {
     e.evt.preventDefault();
     if (e.evt.ctrlKey) {
-      // Zoom
       const scaleBy = 1.05;
       const stage = e.target.getStage();
       const oldScale = stage.scaleX();
@@ -169,7 +268,6 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
       setZoom(newScale);
       setStagePos({ x: pointer.x - mousePointTo.x * newScale, y: pointer.y - mousePointTo.y * newScale });
     } else {
-      // Pan
       setStagePos(prev => ({ x: prev.x - e.evt.deltaX, y: prev.y - e.evt.deltaY }));
     }
   };
@@ -187,7 +285,7 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
   };
 
   const handleMouseDown = (e) => {
-    if (e.evt.button === 1 || e.evt.button === 2) return; // Ignore middle/right clicks
+    if (e.evt.button === 1 || e.evt.button === 2) return;
     if (role === 'viewer') {
       if (tool === 'select') checkDeselect(e);
       return;
@@ -214,7 +312,7 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
         pageId: activePageId,
         x: pos.x, y: pos.y,
         text: '',
-        color: isSticky ? '#fef08a' : color, // Default yellow for sticky
+        color: isSticky ? '#fef08a' : color,
         fontSize: isSticky ? 14 : 24,
         ...(isSticky && { width: 150, height: 150 })
       };
@@ -234,7 +332,7 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
       x: (tool === 'pen' || tool === 'eraser' || tool === 'line') ? 0 : pos.x,
       y: (tool === 'pen' || tool === 'eraser' || tool === 'line') ? 0 : pos.y,
       width: 0, height: 0,
-      color: tool === 'eraser' ? '#09090b' : color, // Match obsidian background for eraser
+      color: tool === 'eraser' ? '#09090b' : color,
       strokeWidth: tool === 'eraser' ? 20 : lineWidth,
       rotation: 0, scaleX: 1, scaleY: 1
     };
@@ -286,11 +384,11 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
   const handleMouseUp = () => {
     if (isDrawing) {
       setIsDrawing(false);
-      if (tool === 'laser') return; // Do not record action for laser
+      if (tool === 'laser') return;
       const lastElement = elements[elements.length - 1];
       recordAction({ type: 'add', element: lastElement });
-      // Finally save the finished stroke/shape to the DB
       socket.emit('update-element', { boardId, element: lastElement });
+      debouncedThumbnail();
     }
   };
 
@@ -314,6 +412,7 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
     recordAction({ type: 'update', before: lastElementBeforeTransform.current, after: newEl });
     setElements(prev => prev.map(el => el.id === newEl.id ? newEl : el));
     socket.emit('update-element', { boardId, element: newEl });
+    debouncedThumbnail();
   };
   const handleDragStart = (e) => { lastElementBeforeTransform.current = elements.find(el => el.id === e.target.id()); };
   const handleDragEnd = (e) => {
@@ -321,6 +420,7 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
     recordAction({ type: 'update', before: lastElementBeforeTransform.current, after: newEl });
     setElements(prev => prev.map(el => el.id === newEl.id ? newEl : el));
     socket.emit('update-element', { boardId, element: newEl });
+    debouncedThumbnail();
   };
 
   const renderElement = (el) => {
@@ -362,13 +462,14 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
     return transform.point({ x: el.x, y: el.y });
   };
 
-  // Tool UI Helper
+  // ── Tool Button with shortcut badge ──
   const ToolButton = ({ id, icon, title }) => (
     <button
-      onClick={() => { setTool(id); setSelectedId(null); }} title={title}
-      className={`w-10 h-10 rounded-lg flex items-center justify-center transition-colors ${tool === id ? 'text-primary bg-primary/20' : 'text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface'}`}
+      onClick={() => { setTool(id); setSelectedId(null); }} title={`${title} (${SHORTCUT_LABELS[id] || ''})`}
+      className={`w-10 h-10 rounded-lg flex items-center justify-center transition-colors relative ${tool === id ? 'text-primary bg-primary/20' : 'text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface'}`}
     >
       <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: "'FILL' 0, 'wght' 400" }}>{icon}</span>
+      {SHORTCUT_LABELS[id] && <span className="shortcut-badge">{SHORTCUT_LABELS[id]}</span>}
     </button>
   );
 
@@ -376,7 +477,18 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
     <div ref={containerRef} className="w-full h-full relative canvas-grid-bg overflow-hidden" 
          style={{ cursor: (tool === 'select' || role === 'viewer') ? 'default' : tool === 'pan' ? 'grab' : (tool === 'text' || tool === 'sticky') ? 'text' : 'crosshair' }}>
       
-      {/* Floating Left Sidebar - Obsidian Toolbar */}
+      {/* ── Confirm Modal ── */}
+      <ConfirmModal
+        open={confirmModal.open}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        confirmLabel="Clear"
+        variant="danger"
+        onConfirm={confirmModal.onConfirm}
+        onCancel={() => setConfirmModal(prev => ({ ...prev, open: false }))}
+      />
+
+      {/* ── Floating Left Sidebar - Obsidian Toolbar ── */}
       {role !== 'viewer' && (
         <div className="absolute left-4 top-1/2 -translate-y-1/2 flex flex-col gap-2 z-40 pointer-events-none">
         <div className="bg-surface border border-outline-variant rounded-xl p-1 shadow-obsidian flex flex-col gap-1 pointer-events-auto w-12 items-center">
@@ -412,15 +524,52 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
               />
             ))}
           </div>
+
+          {/* Stroke Width */}
+          <div className="w-8 h-[1px] bg-outline-variant my-1"></div>
+          <div className="flex flex-col gap-1 py-1 items-center">
+            {STROKE_PRESETS.map(sw => (
+              <button
+                key={sw.value}
+                onClick={() => setLineWidth(sw.value)}
+                title={`Stroke: ${sw.label}`}
+                className={`w-8 h-6 rounded flex items-center justify-center transition-colors ${lineWidth === sw.value ? 'bg-primary/20 text-primary' : 'text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface'}`}
+              >
+                <div 
+                  className="rounded-full" 
+                  style={{ width: sw.value * 3 + 4, height: sw.value + 1, backgroundColor: 'currentColor' }}
+                />
+              </button>
+            ))}
+          </div>
           
           {/* Undo/Redo/Trash */}
           <div className="w-8 h-[1px] bg-outline-variant my-1"></div>
-          <button onClick={undo} disabled={undoStack.length === 0} className="w-10 h-10 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors disabled:opacity-30" title="Undo"><span className="material-symbols-outlined text-[20px]">undo</span></button>
-          <button onClick={redo} disabled={redoStack.length === 0} className="w-10 h-10 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors disabled:opacity-30" title="Redo"><span className="material-symbols-outlined text-[20px]">redo</span></button>
+          <button onClick={undo} disabled={undoStack.length === 0} className="w-10 h-10 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors disabled:opacity-30" title="Undo (Ctrl+Z)"><span className="material-symbols-outlined text-[20px]">undo</span></button>
+          <button onClick={redo} disabled={redoStack.length === 0} className="w-10 h-10 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors disabled:opacity-30" title="Redo (Ctrl+Y)"><span className="material-symbols-outlined text-[20px]">redo</span></button>
           <button onClick={clearCanvas} className="w-10 h-10 rounded-lg flex items-center justify-center text-error hover:bg-error-container transition-colors" title="Clear Canvas"><span className="material-symbols-outlined text-[20px]">delete</span></button>
         </div>
       </div>
       )}
+
+      {/* ── Zoom Controls (Bottom Left) ── */}
+      <div className="absolute bottom-4 left-4 z-40 pointer-events-none">
+        <div className="bg-surface border border-outline-variant rounded-xl shadow-obsidian flex items-center gap-0 pointer-events-auto overflow-hidden zoom-bar">
+          <button onClick={zoomOut} className="w-9 h-9 flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors" title="Zoom Out (Ctrl+−)">
+            <span className="material-symbols-outlined text-[18px]">remove</span>
+          </button>
+          <button
+            onClick={zoomReset}
+            className="h-9 px-2 text-[11px] font-semibold text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors border-x border-outline-variant min-w-[52px]"
+            title="Reset Zoom (Ctrl+0)"
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <button onClick={zoomIn} className="w-9 h-9 flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors" title="Zoom In (Ctrl++)">
+            <span className="material-symbols-outlined text-[18px]">add</span>
+          </button>
+        </div>
+      </div>
 
       {/* Text Editing Overlay */}
       {editingText && (
@@ -459,6 +608,7 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
             }
             setEditingText(null);
             if (tool === 'text' || tool === 'sticky') setTool('select');
+            debouncedThumbnail();
           }}
         />
       )}
@@ -467,7 +617,6 @@ export default function Canvas({ socket, boardId, role, activePageId }) {
       <div className="absolute inset-0 pointer-events-none z-30 overflow-hidden">
         {Object.values(remoteCursors).map(cursor => {
            if(cursor.userId === user?.id) return null;
-           // Project cursor relative to zoom/pan
            const absX = cursor.x * zoom + stagePos.x;
            const absY = cursor.y * zoom + stagePos.y;
            return (

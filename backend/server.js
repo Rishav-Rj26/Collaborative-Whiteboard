@@ -231,6 +231,16 @@ io.on('connection', (socket) => {
     io.in(boardId).emit('board-state', []);
   });
 
+  socket.on('save-thumbnail', async (data) => {
+    const { boardId, thumbnail } = data;
+    if (!socketCanAccessBoard(socket, boardId, true)) return;
+    try {
+      await db.query('UPDATE boards SET thumbnail = $1, updated_at = NOW() WHERE id = $2', [thumbnail, boardId]);
+    } catch (err) {
+      console.error('Failed to save thumbnail:', err.message);
+    }
+  });
+
   socket.on('cursor-move', (data) => {
     const { boardId, cursor } = data;
     if (!socketCanAccessBoard(socket, boardId, true)) return;

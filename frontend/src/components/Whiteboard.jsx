@@ -2,7 +2,9 @@ import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import Canvas from './Canvas';
+import ConfirmModal from './ConfirmModal';
 import { ArrowLeft, Share2, Check, Download, MessageSquare, X, Send } from 'lucide-react';
 
 const SOCKET_SERVER_URL = 'http://localhost:3001';
@@ -11,6 +13,7 @@ export default function Whiteboard() {
   const { boardId } = useParams();
   const navigate = useNavigate();
   const { token } = useAuth();
+  const toast = useToast();
   const [socket, setSocket] = useState(null);
   const [activeUsers, setActiveUsers] = useState([]);
   const [copied, setCopied] = useState(false);
@@ -24,6 +27,9 @@ export default function Whiteboard() {
   const [showHistory, setShowHistory] = useState(false);
   const [historySnapshots, setHistorySnapshots] = useState([]);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+
+  // Confirm Modal
+  const [confirmModal, setConfirmModal] = useState({ open: false, snapshotId: null });
 
   // Chat
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -64,23 +70,41 @@ export default function Whiteboard() {
   }, [pages, activePageId]);
 
   const loadHistory = async () => {
-    const res = await fetch(`${SOCKET_SERVER_URL}/api/boards/${boardId}/snapshots`, { headers: { 'Authorization': `Bearer ${token}` } });
-    if(res.ok) {
-       const data = await res.json();
-       setHistorySnapshots(data.snapshots);
+    try {
+      const res = await fetch(`${SOCKET_SERVER_URL}/api/boards/${boardId}/snapshots`, { headers: { 'Authorization': `Bearer ${token}` } });
+      if(res.ok) {
+         const data = await res.json();
+         setHistorySnapshots(data.snapshots);
+      }
+    } catch (err) {
+      toast.error('Failed to load history');
     }
   };
 
-  const restoreSnapshot = async (snapshotId) => {
-    if(window.confirm("Restore this version? Current unsaved changes will be lost.")) {
+  const executeRestore = async (snapshotId) => {
+    try {
       await fetch(`${SOCKET_SERVER_URL}/api/boards/${boardId}/snapshots/${snapshotId}/restore`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
       setShowHistory(false);
+      setConfirmModal({ open: false, snapshotId: null });
+      toast.success('Version restored');
+    } catch (err) {
+      toast.error('Failed to restore version');
+      setConfirmModal({ open: false, snapshotId: null });
     }
+  };
+
+  const restoreSnapshot = (snapshotId) => {
+    setConfirmModal({ open: true, snapshotId });
   };
 
   const saveSnapshot = async () => {
-    await fetch(`${SOCKET_SERVER_URL}/api/boards/${boardId}/snapshots`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
-    loadHistory();
+    try {
+      await fetch(`${SOCKET_SERVER_URL}/api/boards/${boardId}/snapshots`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+      toast.success('Version saved');
+      loadHistory();
+    } catch (err) {
+      toast.error('Failed to save version');
+    }
   };
 
   useEffect(() => {
@@ -94,6 +118,7 @@ export default function Whiteboard() {
   const handleShare = () => {
     navigator.clipboard.writeText(boardId).then(() => {
       setCopied(true);
+      toast.info('Board ID copied to clipboard');
       setTimeout(() => setCopied(false), 2000);
     });
   };
@@ -108,6 +133,16 @@ export default function Whiteboard() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-background overflow-hidden relative">
+      <ConfirmModal
+        open={confirmModal.open}
+        title="Restore Version"
+        message="Are you sure you want to restore this version? Current unsaved changes will be permanently lost."
+        confirmLabel="Restore"
+        variant="danger"
+        onConfirm={() => executeRestore(confirmModal.snapshotId)}
+        onCancel={() => setConfirmModal({ open: false, snapshotId: null })}
+      />
+
       {/* Floating Top Bar — Obsidian style */}
       <div className="absolute top-4 left-4 right-4 flex justify-between items-center z-50 pointer-events-none">
         {/* Left: Logo + Title + Undo/Redo */}

@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { Loader2 } from 'lucide-react';
+import ConfirmModal from './ConfirmModal';
 
 const API_URL = 'http://localhost:3001/api';
 
@@ -13,6 +15,10 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const { user, token, logout } = useAuth();
+  const toast = useToast();
+
+  // Confirm modal state
+  const [confirmModal, setConfirmModal] = useState({ open: false, boardId: null });
 
   const fetchBoards = async () => {
     try {
@@ -40,16 +46,23 @@ export default function Dashboard() {
       const data = await res.json();
       setShowCreate(false);
       setNewTitle('');
+      toast.success('Board created');
       navigate(`/board/${data.board.id}`);
-    } catch (err) { console.error('Failed to create board:', err); }
+    } catch (err) {
+      console.error('Failed to create board:', err);
+      toast.error('Failed to create board');
+    }
   };
 
   const deleteBoard = async (boardId) => {
-    if (!window.confirm('Delete this board permanently?')) return;
     try {
       await fetch(`${API_URL}/boards/${boardId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
       setBoards(prev => prev.filter(b => b.id !== boardId));
-    } catch (err) { console.error('Failed to delete board:', err); }
+      toast.success('Board deleted');
+    } catch (err) {
+      console.error('Failed to delete board:', err);
+      toast.error('Failed to delete board');
+    }
   };
 
   const joinBoard = async (e) => {
@@ -57,14 +70,32 @@ export default function Dashboard() {
     if (!joinId.trim()) return;
     try {
       await fetch(`${API_URL}/boards/${joinId.trim()}/join`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+      toast.success('Joined board');
       navigate(`/board/${joinId.trim()}`);
-    } catch (err) { console.error('Failed to join board:', err); }
+    } catch (err) {
+      console.error('Failed to join board:', err);
+      toast.error('Failed to join board');
+    }
   };
 
   const formatDate = (d) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
   return (
     <div className="bg-background text-on-background h-screen overflow-hidden flex relative">
+      {/* Confirm Modal */}
+      <ConfirmModal
+        open={confirmModal.open}
+        title="Delete Board"
+        message="This board and all its contents will be permanently deleted. This action cannot be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={() => {
+          deleteBoard(confirmModal.boardId);
+          setConfirmModal({ open: false, boardId: null });
+        }}
+        onCancel={() => setConfirmModal({ open: false, boardId: null })}
+      />
+
       {/* Sidebar */}
       <aside className="glass-panel h-screen w-64 hidden md:flex flex-col border-r border-outline-variant py-6 relative z-10">
         <div className="px-6 mb-8 flex items-center gap-3">
@@ -150,8 +181,8 @@ export default function Dashboard() {
 
             {/* Create Board Modal */}
             {showCreate && (
-              <div className="fixed inset-0 bg-background/70 backdrop-blur-sm flex items-center justify-center z-50">
-                <div className="bg-surface-container-highest rounded-xl p-6 border border-outline-variant shadow-level-3 w-full max-w-md mx-4">
+              <div className="fixed inset-0 bg-background/70 backdrop-blur-sm flex items-center justify-center z-50 modal-backdrop">
+                <div className="modal-content bg-surface-container-highest rounded-xl p-6 border border-outline-variant shadow-level-3 w-full max-w-md mx-4">
                   <h3 className="text-title text-on-surface mb-4">Create New Board</h3>
                   <input
                     autoFocus type="text" value={newTitle} onChange={(e) => setNewTitle(e.target.value)}
@@ -172,18 +203,61 @@ export default function Dashboard() {
               <div className="flex items-center justify-center py-20">
                 <Loader2 size={32} className="animate-spin text-primary" />
               </div>
+            ) : boards.length === 0 ? (
+              /* ── Empty State ── */
+              <div className="flex flex-col items-center justify-center py-24 animate-fade-in">
+                {/* Illustration */}
+                <div className="relative w-48 h-48 mb-8">
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="w-28 h-28 border-2 border-primary/20 rounded-2xl rotate-6">
+                      <div className="absolute inset-3 border border-primary/15 rounded-xl -rotate-3"></div>
+                      <div className="absolute inset-6 bg-primary/5 rounded-lg rotate-2"></div>
+                    </div>
+                  </div>
+                  <div className="absolute top-6 right-10 w-3 h-3 rounded-full bg-tertiary/40 animate-pulse"></div>
+                  <div className="absolute bottom-8 left-8 w-2 h-2 rounded-full bg-primary/50 animate-pulse" style={{ animationDelay: '0.5s' }}></div>
+                  <div className="absolute top-16 left-6 w-12 h-0.5 bg-primary/15 rounded-full -rotate-12"></div>
+                  <div className="absolute bottom-14 right-8 w-10 h-0.5 bg-tertiary/15 rounded-full rotate-12"></div>
+                  {/* Pen icon in center */}
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className="material-symbols-outlined text-[40px] text-primary/30" style={{ fontVariationSettings: "'FILL' 0, 'wght' 300" }}>draw</span>
+                  </div>
+                </div>
+                
+                <h3 className="text-headline text-on-surface mb-3">No boards yet</h3>
+                <p className="text-body-lg text-on-surface-variant text-center max-w-md mb-8">
+                  Create your first board to start collaborating in real-time with your team.
+                </p>
+                <button
+                  onClick={() => setShowCreate(true)}
+                  className="px-6 py-3 bg-primary text-on-primary rounded-lg text-label-md font-semibold hover:bg-primary/90 transition-all shadow-lg shadow-primary/20 active:scale-[0.98] flex items-center gap-2"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+                  Create Your First Board
+                </button>
+              </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                {boards.map(board => (
+                {boards.map((board, index) => (
                   <div
                     key={board.id}
-                    className="glass-card rounded-xl overflow-hidden hover:border-primary/50 transition-all duration-300 group cursor-pointer shadow-xl"
+                    className="board-card-enter glass-card rounded-xl overflow-hidden hover:border-primary/50 transition-all duration-300 group cursor-pointer shadow-xl"
+                    style={{ animationDelay: `${index * 60}ms` }}
                     onClick={() => navigate(`/board/${board.id}`)}
                   >
                     <div className="h-40 w-full relative overflow-hidden bg-surface-container/20">
-                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-container to-surface-container-high">
-                        <span className="text-4xl font-bold text-on-surface-variant/20">{board.title?.charAt(0).toUpperCase()}</span>
-                      </div>
+                      {board.thumbnail ? (
+                        <img 
+                          src={board.thumbnail} 
+                          alt={board.title}
+                          className="w-full h-full object-cover"
+                          style={{ imageRendering: 'auto' }}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-surface-container to-surface-container-high">
+                          <span className="text-4xl font-bold text-on-surface-variant/20">{board.title?.charAt(0).toUpperCase()}</span>
+                        </div>
+                      )}
                       <div className="absolute inset-0 bg-gradient-to-t from-surface-container-low/80 to-transparent opacity-60"></div>
                     </div>
                     <div className="p-4">
@@ -199,7 +273,7 @@ export default function Dashboard() {
                         </div>
                         {board.owner_id === user?.id && (
                           <button
-                            onClick={(e) => { e.stopPropagation(); deleteBoard(board.id); }}
+                            onClick={(e) => { e.stopPropagation(); setConfirmModal({ open: true, boardId: board.id }); }}
                             className="text-on-surface-variant hover:text-error transition-colors opacity-0 group-hover:opacity-100"
                             title="Delete"
                           >
@@ -214,7 +288,8 @@ export default function Dashboard() {
                 {/* Create New Card */}
                 <button
                   onClick={() => setShowCreate(true)}
-                  className="bg-surface-container-low/30 backdrop-blur-md border border-dashed border-outline-variant/50 rounded-xl flex flex-col items-center justify-center min-h-[250px] hover:border-primary/50 hover:bg-surface-container-low/50 transition-all duration-300 group shadow-xl"
+                  className="board-card-enter bg-surface-container-low/30 backdrop-blur-md border border-dashed border-outline-variant/50 rounded-xl flex flex-col items-center justify-center min-h-[250px] hover:border-primary/50 hover:bg-surface-container-low/50 transition-all duration-300 group shadow-xl"
+                  style={{ animationDelay: `${boards.length * 60}ms` }}
                 >
                   <div className="w-12 h-12 rounded-full bg-surface-variant/40 flex items-center justify-center text-on-surface-variant group-hover:bg-primary/20 group-hover:text-primary transition-colors mb-4">
                     <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>

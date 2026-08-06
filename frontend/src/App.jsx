@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { ToastProvider } from './context/ToastContext';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import Whiteboard from './components/Whiteboard';
@@ -47,10 +48,13 @@ function App() {
   return (
     <Router>
       <AuthProvider>
-        <AppRoutes />
+        <ToastProvider>
+          <AppRoutes />
+        </ToastProvider>
       </AuthProvider>
     </Router>
   );
 }
 
 export default App;
+

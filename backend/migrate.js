@@ -40,6 +40,13 @@ const runMigration = async () => {
     `);
     console.log('✅ Elements table altered');
 
+    // Alter boards table to add thumbnail
+    await pool.query(`
+      ALTER TABLE boards 
+      ADD COLUMN IF NOT EXISTS thumbnail TEXT;
+    `);
+    console.log('✅ Boards table altered');
+
     // Create default pages for existing boards that don't have pages
     const boards = await pool.query('SELECT id FROM boards');
     for (const board of boards.rows) {
