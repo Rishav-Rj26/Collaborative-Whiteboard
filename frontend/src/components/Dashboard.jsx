@@ -4,8 +4,8 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { Loader2 } from 'lucide-react';
 import ConfirmModal from './ConfirmModal';
-
-const API_URL = 'http://localhost:3001/api';
+import { API_URL } from '../config';
+import BoardlyLogo from './BoardlyLogo';
 
 export default function Dashboard() {
   const [boards, setBoards] = useState([]);
@@ -13,6 +13,11 @@ export default function Dashboard() {
   const [newTitle, setNewTitle] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeFilter, setActiveFilter] = useState('all'); // all, shared, recent
+  const [editingTitleId, setEditingTitleId] = useState(null);
+  const [editingTitleText, setEditingTitleText] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const navigate = useNavigate();
   const { user, token, logout } = useAuth();
   const toast = useToast();
@@ -65,6 +70,24 @@ export default function Dashboard() {
     }
   };
 
+  const renameBoard = async (boardId, newTitle) => {
+    if (!newTitle.trim()) return;
+    try {
+      const res = await fetch(`${API_URL}/boards/${boardId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ title: newTitle.trim() })
+      });
+      if (res.ok) {
+        setBoards(prev => prev.map(b => b.id === boardId ? { ...b, title: newTitle.trim() } : b));
+        toast.success('Board renamed');
+      }
+    } catch (err) {
+      toast.error('Failed to rename board');
+    }
+    setEditingTitleId(null);
+  };
+
   const joinBoard = async (e) => {
     e.preventDefault();
     if (!joinId.trim()) return;
@@ -79,6 +102,22 @@ export default function Dashboard() {
   };
 
   const formatDate = (d) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  // Filter and sort boards
+  const filteredBoards = boards
+    .filter(b => {
+      if (activeFilter === 'shared') return b.owner_id !== user?.id;
+      return true; // 'all' or 'recent'
+    })
+    .filter(b => b.title.toLowerCase().includes(searchQuery.toLowerCase()))
+    .sort((a, b) => {
+      if (activeFilter === 'recent') {
+        return new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at);
+      }
+      return 0;
+    });
+
+  const displayBoards = activeFilter === 'recent' ? filteredBoards.slice(0, 5) : filteredBoards;
 
   return (
     <div className="bg-background text-on-background h-screen overflow-hidden flex relative">
@@ -97,29 +136,35 @@ export default function Dashboard() {
       />
 
       {/* Sidebar */}
-      <aside className="glass-panel h-screen w-64 hidden md:flex flex-col border-r border-outline-variant py-6 relative z-10">
-        <div className="px-6 mb-8 flex items-center gap-3">
-          <div className="w-10 h-10 rounded bg-primary flex items-center justify-center">
-            <span className="text-on-primary font-bold text-sm">B</span>
+      {sidebarOpen && (
+        <div className="fixed inset-0 z-40 bg-black/50 md:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
+      <aside className={`fixed inset-y-0 left-0 z-50 glass-panel h-screen w-64 flex flex-col border-r border-outline-variant py-6 transform transition-transform duration-300 md:relative md:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="px-6 mb-8 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <BoardlyLogo size={40} />
+            <div>
+              <h1 className="text-on-surface text-sm font-bold">Project Workspace</h1>
+              <p className="text-label text-on-surface-variant">Collaborative Team</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-on-surface text-sm font-bold">Project Workspace</h1>
-            <p className="text-label text-on-surface-variant">Collaborative Team</p>
-          </div>
+          <button className="md:hidden text-on-surface-variant p-1" onClick={() => setSidebarOpen(false)}>
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
         </div>
         <nav className="flex-1 flex flex-col gap-1 px-2">
-          <a href="#" className="flex items-center gap-3 px-4 py-3 text-primary bg-primary/10 rounded-lg text-label-md transition-colors">
+          <button onClick={() => setActiveFilter('all')} className={`flex items-center gap-3 px-4 py-3 rounded-lg text-label-md transition-colors w-full text-left ${activeFilter === 'all' ? 'text-primary bg-primary/10' : 'text-on-surface-variant hover:bg-surface-variant/40'}`}>
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" /></svg>
             All Boards
-          </a>
-          <a href="#" className="flex items-center gap-3 px-4 py-3 text-on-surface-variant text-label-md transition-colors hover:bg-surface-variant/40 rounded-lg">
+          </button>
+          <button onClick={() => setActiveFilter('shared')} className={`flex items-center gap-3 px-4 py-3 rounded-lg text-label-md transition-colors w-full text-left ${activeFilter === 'shared' ? 'text-primary bg-primary/10' : 'text-on-surface-variant hover:bg-surface-variant/40'}`}>
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" /></svg>
             Shared with Me
-          </a>
-          <a href="#" className="flex items-center gap-3 px-4 py-3 text-on-surface-variant text-label-md transition-colors hover:bg-surface-variant/40 rounded-lg">
+          </button>
+          <button onClick={() => setActiveFilter('recent')} className={`flex items-center gap-3 px-4 py-3 rounded-lg text-label-md transition-colors w-full text-left ${activeFilter === 'recent' ? 'text-primary bg-primary/10' : 'text-on-surface-variant hover:bg-surface-variant/40'}`}>
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
             Recent
-          </a>
+          </button>
         </nav>
         <div className="px-4 mt-auto">
           <button onClick={() => setShowCreate(true)} className="w-full py-3 bg-primary text-on-primary rounded-lg text-label-md font-medium hover:bg-primary/90 transition-colors flex items-center justify-center gap-2">
@@ -140,14 +185,17 @@ export default function Dashboard() {
         {/* Top Nav */}
         <header className="w-full h-16 flex justify-between items-center px-8 lg:px-10 border-b border-outline-variant glass-panel">
           <div className="flex items-center gap-4">
-            <div className="md:hidden w-8 h-8 bg-primary rounded flex items-center justify-center">
+            <button className="md:hidden text-on-surface-variant" onClick={() => setSidebarOpen(true)}>
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
+            </button>
+            <div className="hidden md:flex w-8 h-8 bg-primary rounded items-center justify-center">
               <span className="text-on-primary font-bold text-xs">B</span>
             </div>
           </div>
           <div className="flex-1 max-w-md mx-4">
             <div className="relative flex items-center w-full h-10 rounded-lg bg-surface-container/50 border border-outline-variant focus-within:border-primary focus-within:ring-1 focus-within:ring-primary transition-all">
               <svg className="absolute left-3 w-5 h-5 text-on-surface-variant" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
-              <input type="text" placeholder="Search boards..." className="w-full h-full bg-transparent border-none focus:ring-0 text-on-surface pl-10 pr-4 text-sm outline-none placeholder-on-surface-variant" />
+              <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search boards..." className="w-full h-full bg-transparent border-none focus:ring-0 text-on-surface pl-10 pr-4 text-sm outline-none placeholder-on-surface-variant" />
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -162,8 +210,10 @@ export default function Dashboard() {
           <div className="max-w-[1280px] mx-auto">
             <header className="mb-12 flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4">
               <div>
-                <h2 className="text-display text-on-background mb-2">Dashboard</h2>
-                <p className="text-body-lg text-on-surface-variant">Welcome back. Here are your recent boards.</p>
+                <h2 className="text-display text-on-background mb-2">
+                  {activeFilter === 'shared' ? 'Shared with Me' : activeFilter === 'recent' ? 'Recent Boards' : 'Dashboard'}
+                </h2>
+                <p className="text-body-lg text-on-surface-variant">Welcome back. Here are your {activeFilter === 'recent' ? 'recent' : ''} boards.</p>
               </div>
 
               {/* Join Board */}
@@ -203,7 +253,7 @@ export default function Dashboard() {
               <div className="flex items-center justify-center py-20">
                 <Loader2 size={32} className="animate-spin text-primary" />
               </div>
-            ) : boards.length === 0 ? (
+            ) : displayBoards.length === 0 ? (
               /* ── Empty State ── */
               <div className="flex flex-col items-center justify-center py-24 animate-fade-in">
                 {/* Illustration */}
@@ -238,7 +288,7 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                {boards.map((board, index) => (
+                {displayBoards.map((board, index) => (
                   <div
                     key={board.id}
                     className="board-card-enter glass-card rounded-xl overflow-hidden hover:border-primary/50 transition-all duration-300 group cursor-pointer shadow-xl"
@@ -260,9 +310,35 @@ export default function Dashboard() {
                       )}
                       <div className="absolute inset-0 bg-gradient-to-t from-surface-container-low/80 to-transparent opacity-60"></div>
                     </div>
-                    <div className="p-4">
-                      <h3 className="text-headline-mobile text-on-surface mb-1 truncate text-base font-semibold">{board.title}</h3>
-                      <p className="text-body-sm text-on-surface-variant mb-4 flex items-center gap-1">
+                    <div className="p-4" onClick={(e) => e.stopPropagation()}>
+                      {editingTitleId === board.id ? (
+                        <input
+                          autoFocus
+                          type="text"
+                          className="w-full bg-surface-container border border-primary rounded px-2 py-1 text-sm text-on-surface mb-1 outline-none"
+                          value={editingTitleText}
+                          onChange={(e) => setEditingTitleText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') renameBoard(board.id, editingTitleText);
+                            if (e.key === 'Escape') setEditingTitleId(null);
+                          }}
+                          onBlur={() => renameBoard(board.id, editingTitleText)}
+                        />
+                      ) : (
+                        <h3 
+                          className="text-headline-mobile text-on-surface mb-1 truncate text-base font-semibold hover:text-primary transition-colors"
+                          onDoubleClick={() => {
+                            if (board.owner_id === user?.id) {
+                              setEditingTitleId(board.id);
+                              setEditingTitleText(board.title);
+                            }
+                          }}
+                          title={board.owner_id === user?.id ? "Double-click to rename" : ""}
+                        >
+                          {board.title}
+                        </h3>
+                      )}
+                      <p className="text-body-sm text-on-surface-variant mb-4 flex items-center gap-1 cursor-pointer" onClick={() => navigate(`/board/${board.id}`)}>
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                         {formatDate(board.updated_at || board.created_at)}
                       </p>

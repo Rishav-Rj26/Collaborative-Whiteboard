@@ -3,22 +3,33 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const db = require('../db');
 const { JWT_SECRET, verifyToken } = require('../middleware/auth');
+const { authLimiter, rateLimitMiddleware } = require('../middleware/rateLimit');
+const { validEmail, sanitizeString } = require('../lib/validation');
 
 const router = express.Router();
 
 const SALT_ROUNDS = 10;
 
 // POST /api/auth/register
-router.post('/register', async (req, res) => {
+router.post('/register', rateLimitMiddleware(authLimiter), async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    let { name, email, password } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'Name, email, and password are required' });
     }
 
+    if (!validEmail(email)) {
+      return res.status(400).json({ error: 'Invalid email address' });
+    }
+
     if (password.length < 6) {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    name = sanitizeString(name);
+    if (name.length === 0) {
+      return res.status(400).json({ error: 'Invalid name' });
     }
 
     // Check if email already exists
@@ -48,7 +59,7 @@ router.post('/register', async (req, res) => {
 });
 
 // POST /api/auth/login
-router.post('/login', async (req, res) => {
+router.post('/login', rateLimitMiddleware(authLimiter), async (req, res) => {
   try {
     const { email, password } = req.body;
 

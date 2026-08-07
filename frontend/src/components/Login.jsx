@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Info } from 'lucide-react';
+import BoardlyLogo from './BoardlyLogo';
 
 export default function Login() {
   const [isRegister, setIsRegister] = useState(false);
@@ -40,18 +41,9 @@ export default function Login() {
         <div className="hidden md:flex md:w-5/12 bg-surface-container-low relative items-center justify-center p-12 overflow-hidden border-r border-outline-variant">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-transparent to-transparent opacity-50"></div>
           <div className="relative z-10 w-full flex flex-col items-center">
-            {/* Abstract illustration placeholder */}
-            <div className="w-full max-w-sm h-48 relative mb-8">
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="w-32 h-32 border-2 border-primary/30 rounded-2xl rotate-12 relative">
-                  <div className="absolute inset-4 border border-primary/20 rounded-xl -rotate-6"></div>
-                  <div className="absolute inset-8 bg-primary/10 rounded-lg rotate-3"></div>
-                </div>
-                <div className="absolute top-4 right-12 w-3 h-3 rounded-full bg-tertiary/60"></div>
-                <div className="absolute bottom-6 left-16 w-2 h-2 rounded-full bg-primary/60"></div>
-                <div className="absolute top-12 left-8 w-16 h-1 bg-primary/20 rounded-full -rotate-12"></div>
-                <div className="absolute bottom-10 right-8 w-12 h-1 bg-tertiary/20 rounded-full rotate-12"></div>
-              </div>
+            {/* Logo */}
+            <div className="w-full max-w-sm h-48 relative mb-8 flex items-center justify-center">
+              <BoardlyLogo size={160} />
             </div>
             <div className="text-center px-4">
               <h3 className="text-on-surface text-lg font-semibold tracking-tight">Visualize your workflow</h3>
@@ -65,9 +57,7 @@ export default function Login() {
           {/* Logo */}
           <div className="mb-12">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-                <span className="text-on-primary text-sm font-bold">B</span>
-              </div>
+              <BoardlyLogo size={32} />
               <span className="text-on-surface text-xl font-bold tracking-tight">Boardly</span>
             </div>
           </div>
@@ -118,7 +108,7 @@ export default function Login() {
               <div className="flex justify-between items-center">
                 <label className="text-xs text-on-surface-variant uppercase tracking-widest font-semibold">Password</label>
                 {!isRegister && (
-                  <a className="text-xs text-primary hover:text-primary-fixed-dim transition-colors cursor-pointer">Reset password?</a>
+                  <span className="text-xs text-outline-variant flex items-center gap-1 cursor-help" title="Password reset coming soon"><Info size={12}/> Reset password?</span>
                 )}
               </div>
               <div className="relative">
@@ -166,22 +156,6 @@ export default function Login() {
             </p>
           </div>
 
-          {/* SSO Divider */}
-          <div className="mt-10 flex items-center">
-            <div className="flex-grow border-t border-outline-variant"></div>
-            <span className="px-4 text-[10px] text-outline uppercase tracking-[0.2em] font-bold">Identity Provider</span>
-            <div className="flex-grow border-t border-outline-variant"></div>
-          </div>
-          <div className="mt-8 grid grid-cols-2 gap-4">
-            <button className="flex items-center justify-center gap-3 py-3 border border-outline-variant rounded-lg hover:bg-surface-container-high hover:border-outline transition-all text-sm text-on-surface font-medium">
-              <svg className="h-4 w-4" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
-              Google
-            </button>
-            <button className="flex items-center justify-center gap-3 py-3 border border-outline-variant rounded-lg hover:bg-surface-container-high hover:border-outline transition-all text-sm text-on-surface font-medium">
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"/></svg>
-              Single Sign-On
-            </button>
-          </div>
         </div>
       </div>
     </div>

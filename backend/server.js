@@ -11,7 +11,11 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { canEdit, getBoardRole } = require('./lib/boardAccess');
-const { validChatMessage } = require('./lib/validation');
+const { validChatMessage, validElementPayload } = require('./lib/validation');
+const { RateLimiter } = require('./middleware/rateLimit');
+
+// Simple rate limiter for socket drawing (e.g. 500 points / 10s per user)
+const socketLimiter = new RateLimiter(500, 10_000);
 
 const uploadsDir = path.join(__dirname, 'public', 'uploads');
 if (!fs.existsSync(uploadsDir)) {
@@ -162,7 +166,9 @@ io.on('connection', (socket) => {
 
   socket.on('update-element', async (data) => {
     const { boardId, element } = data;
-    if (!socketCanAccessBoard(socket, boardId, true) || !element?.id) return;
+    if (!socketCanAccessBoard(socket, boardId, true) || !validElementPayload(element)) return;
+
+    if (!socketLimiter.check(`${socket.user.id}:draw`).allowed) return;
 
     // Persist to DB (fire and forget for speed, errors are logged)
     upsertElement(boardId, element).catch(err =>
@@ -180,7 +186,9 @@ io.on('connection', (socket) => {
 
   socket.on('draw-progress', (data) => {
     const { boardId, element } = data;
-    if (!socketCanAccessBoard(socket, boardId, true)) return;
+    if (!socketCanAccessBoard(socket, boardId, true) || !validElementPayload(element)) return;
+    
+    if (!socketLimiter.check(`${socket.user.id}:draw`).allowed) return;
     
     // Broadcast immediately without writing to DB
     socket.to(boardId).volatile.emit('update-element', {
@@ -192,6 +200,7 @@ io.on('connection', (socket) => {
   socket.on('set-elements', async (data) => {
     const { boardId, elements } = data;
     if (!socketCanAccessBoard(socket, boardId, true) || !Array.isArray(elements)) return;
+    if (!elements.every(validElementPayload)) return;
 
     // Replace all elements atomically so a failed update cannot leave a partial board.
     try {

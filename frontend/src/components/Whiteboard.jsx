@@ -6,8 +6,7 @@ import { useToast } from '../context/ToastContext';
 import Canvas from './Canvas';
 import ConfirmModal from './ConfirmModal';
 import { ArrowLeft, Share2, Check, Download, MessageSquare, X, Send } from 'lucide-react';
-
-const SOCKET_SERVER_URL = 'http://localhost:3001';
+import { SOCKET_URL, API_URL } from '../config';
 
 export default function Whiteboard() {
   const { boardId } = useParams();
@@ -41,7 +40,7 @@ export default function Whiteboard() {
 
   useEffect(() => {
     if (!token) return;
-    const newSocket = io(SOCKET_SERVER_URL, { auth: { token } });
+    const newSocket = io(SOCKET_URL, { auth: { token } });
     setSocket(newSocket);
     newSocket.on('connect', () => newSocket.emit('join-board', boardId));
     newSocket.on('active-users', (users) => setActiveUsers(users));
@@ -71,7 +70,7 @@ export default function Whiteboard() {
 
   const loadHistory = async () => {
     try {
-      const res = await fetch(`${SOCKET_SERVER_URL}/api/boards/${boardId}/snapshots`, { headers: { 'Authorization': `Bearer ${token}` } });
+      const res = await fetch(`${API_URL}/boards/${boardId}/snapshots`, { headers: { 'Authorization': `Bearer ${token}` } });
       if(res.ok) {
          const data = await res.json();
          setHistorySnapshots(data.snapshots);
@@ -83,7 +82,7 @@ export default function Whiteboard() {
 
   const executeRestore = async (snapshotId) => {
     try {
-      await fetch(`${SOCKET_SERVER_URL}/api/boards/${boardId}/snapshots/${snapshotId}/restore`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+      await fetch(`${API_URL}/boards/${boardId}/snapshots/${snapshotId}/restore`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
       setShowHistory(false);
       setConfirmModal({ open: false, snapshotId: null });
       toast.success('Version restored');
@@ -99,7 +98,7 @@ export default function Whiteboard() {
 
   const saveSnapshot = async () => {
     try {
-      await fetch(`${SOCKET_SERVER_URL}/api/boards/${boardId}/snapshots`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+      await fetch(`${API_URL}/boards/${boardId}/snapshots`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
       toast.success('Version saved');
       loadHistory();
     } catch (err) {
@@ -159,47 +158,46 @@ export default function Whiteboard() {
           </button>
         </div>
 
-        {/* Right: Avatars + Share + Chat */}
-        <div className="bg-surface border border-outline-variant rounded-xl p-1 shadow-xl flex items-center gap-2 pointer-events-auto">
-          {/* Avatars */}
-          <div className="flex items-center -space-x-2 ml-2">
-            {activeUsers.slice(0, 4).map((u, i) => (
-              <div
-                key={u.id} title={u.name}
-                className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold text-white border-2 border-surface relative hover:z-20 transition-transform hover:scale-110"
-                style={{ backgroundColor: `hsl(${(i * 137.5 + 270) % 360}, 60%, 55%)`, zIndex: 10 - i }}
-              >
+        {/* Right Controls */}
+        <div className="bg-surface border border-outline-variant rounded-xl p-1 shadow-xl flex items-center gap-1 md:gap-3 pointer-events-auto">
+          <div className="hidden md:flex items-center gap-2 mr-4">
+            {activeUsers.slice(0, 3).map((u, i) => (
+              <div key={i} className="w-8 h-8 rounded-full border-2 border-surface flex items-center justify-center text-[10px] font-bold text-white shadow-level-2" style={{ backgroundColor: stringToColor(u.name), marginLeft: i > 0 ? -12 : 0 }} title={u.name}>
                 {u.name.substring(0, 2).toUpperCase()}
               </div>
             ))}
-            {activeUsers.length > 4 && (
-              <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold bg-surface-container-highest text-on-surface-variant border-2 border-surface z-0">
-                +{activeUsers.length - 4}
+            {activeUsers.length > 3 && (
+              <div className="w-8 h-8 rounded-full border-2 border-surface bg-surface-container flex items-center justify-center text-[10px] font-bold text-on-surface-variant shadow-level-2" style={{ marginLeft: -12 }}>
+                +{activeUsers.length - 3}
               </div>
             )}
           </div>
 
-          {role !== 'viewer' && (
-            <button
-              onClick={() => { setShowHistory(true); loadHistory(); }}
-              className="bg-surface text-on-surface-variant text-sm font-medium px-3 h-10 rounded-lg border border-outline-variant hover:bg-surface-container-low transition-colors flex items-center gap-2"
-            >
-              <span className="material-symbols-outlined text-[18px]">history</span>
-              History
-            </button>
-          )}
+          <button onClick={() => { setShowHistory(true); loadHistory(); }} className="flex items-center gap-2 px-2 py-2 md:px-3 text-sm font-medium text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors rounded-lg">
+            <span className="material-symbols-outlined text-[18px]">history</span>
+            <span className="hidden md:inline">History</span>
+          </button>
+          <button onClick={() => window.dispatchEvent(new CustomEvent('export-canvas', { detail: { format: 'png' } }))} className="flex items-center gap-2 px-2 py-2 md:px-3 text-sm font-medium text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors rounded-lg">
+            <Download size={16} />
+            <span className="hidden md:inline">Export</span>
+          </button>
+          
+          <button onClick={() => setShowChat(!showChat)} className="relative flex items-center gap-2 px-2 py-2 md:px-3 text-sm font-medium text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors rounded-lg">
+            <MessageSquare size={16} />
+            <span className="hidden md:inline">Chat</span>
+            {unreadCount > 0 && !showChat && (
+              <span className="absolute top-1 right-1 md:top-1.5 md:right-1.5 w-2 h-2 rounded-full bg-error ring-2 ring-surface"></span>
+            )}
+          </button>
 
-          <button
-            onClick={handleShare}
-            className="bg-primary text-on-primary text-sm font-medium px-4 h-10 rounded-lg hover:bg-primary-container transition-colors flex items-center gap-2 shadow-level-2"
-          >
-            {copied ? <Check size={16} /> : <Share2 size={16} />}
-            {copied ? 'Copied' : 'Share'}
+          <div className="w-[1px] h-4 bg-outline-variant mx-1 md:mx-2"></div>
+          <button onClick={handleShare} className="flex items-center gap-2 px-2 py-2 md:px-4 md:py-2 text-sm font-bold bg-primary text-on-primary rounded-lg shadow-level-2 hover:bg-primary/90 transition-all">
+            <Share2 size={16} />
+            <span className="hidden md:inline">Share</span>
           </button>
         </div>
       </div>
 
-      {/* Pages Navigation (Bottom Center) */}
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 z-50 pointer-events-none">
         <div className="bg-surface border border-outline-variant rounded-xl shadow-lg flex items-center pointer-events-auto overflow-hidden">
           {pages.map((p) => (
@@ -218,7 +216,6 @@ export default function Whiteboard() {
         </div>
       </div>
 
-      {/* History Modal */}
       {showHistory && (
         <div className="absolute inset-0 bg-black/60 z-[100] flex items-center justify-center pointer-events-auto">
           <div className="bg-surface rounded-xl border border-outline-variant p-6 w-[400px] shadow-level-3">
@@ -242,39 +239,6 @@ export default function Whiteboard() {
         </div>
       )}
 
-      {/* Bottom Right Controls */}
-      <div className="absolute bottom-4 right-4 flex items-center gap-2 z-50 pointer-events-none">
-        <div className="relative pointer-events-auto">
-          <button
-            onClick={() => setExportMenuOpen(!exportMenuOpen)}
-            className="bg-surface-container border border-outline-variant rounded-lg w-10 h-10 flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high transition-colors shadow-lg"
-            title="Export"
-          >
-            <Download size={18} />
-          </button>
-          {exportMenuOpen && (
-            <div className="absolute bottom-full right-0 mb-2 bg-surface border border-outline-variant rounded-lg shadow-level-3 overflow-hidden w-32 flex flex-col">
-              <button onClick={() => { window.dispatchEvent(new CustomEvent('export-canvas', { detail: { format: 'png' } })); setExportMenuOpen(false); }} className="px-4 py-2 text-sm text-left text-on-surface hover:bg-surface-container-low">Export PNG</button>
-              <button onClick={() => { window.dispatchEvent(new CustomEvent('export-canvas', { detail: { format: 'jpeg' } })); setExportMenuOpen(false); }} className="px-4 py-2 text-sm text-left text-on-surface hover:bg-surface-container-low">Export JPEG</button>
-              <button onClick={() => { window.dispatchEvent(new CustomEvent('export-canvas', { detail: { format: 'pdf' } })); setExportMenuOpen(false); }} className="px-4 py-2 text-sm text-left text-on-surface hover:bg-surface-container-low">Export PDF</button>
-            </div>
-          )}
-        </div>
-        <button
-          onClick={() => setIsChatOpen(!isChatOpen)}
-          className={`relative border border-outline-variant rounded-lg w-10 h-10 flex items-center justify-center transition-colors shadow-lg pointer-events-auto ${isChatOpen ? 'bg-primary text-on-primary' : 'bg-surface-container text-on-surface-variant hover:bg-surface-container-high'}`}
-          title="Chat"
-        >
-          <MessageSquare size={18} />
-          {unreadCount > 0 && (
-            <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-error text-[10px] font-bold text-white">
-              {unreadCount}
-            </span>
-          )}
-        </button>
-      </div>
-
-      {/* Main Canvas */}
       <div className="flex-grow flex relative w-full h-full overflow-hidden">
         <div className="flex-grow relative h-full">
           {socket ? (
@@ -286,41 +250,40 @@ export default function Whiteboard() {
           )}
         </div>
 
-        {/* Chat Panel */}
-        {isChatOpen && (
-          <div className="w-80 h-full bg-surface border-l border-outline-variant flex flex-col shadow-level-3 z-30">
-            <div className="p-4 border-b border-outline-variant flex justify-between items-center">
-              <h2 className="text-title text-on-surface text-sm flex items-center gap-2">
-                <MessageSquare size={16}/> Chat
-              </h2>
-              <button onClick={() => setIsChatOpen(false)} className="text-on-surface-variant hover:text-on-surface p-1 rounded-lg hover:bg-surface-variant/40 transition-colors">
-                <X size={18} />
-              </button>
-            </div>
-            <div className="flex-grow p-4 overflow-y-auto flex flex-col gap-3">
-              {messages.length === 0 ? (
-                <div className="text-center text-on-surface-variant text-sm mt-10 opacity-60">No messages yet.</div>
-              ) : (
-                messages.map((msg) => (
-                  <div key={msg.id} className="flex flex-col">
-                    <span className="text-label text-on-surface-variant/70 mb-0.5 ml-1">{msg.name}</span>
-                    <div className="bg-surface-container rounded-2xl rounded-tl-sm px-3 py-2 text-sm text-on-surface break-words">
-                      {msg.text}
-                    </div>
-                  </div>
-                ))
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-            <form onSubmit={handleSendMessage} className="p-3 border-t border-outline-variant flex gap-2">
-              <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Message..."
-                className="flex-grow bg-surface-container border border-outline-variant rounded-full px-4 py-2 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary placeholder-on-surface-variant" />
-              <button type="submit" disabled={!chatInput.trim()} className="bg-primary text-on-primary p-2 rounded-full hover:bg-primary-container disabled:opacity-40 transition-all">
-                <Send size={14} />
-              </button>
-            </form>
+      {/* Right Sidebar Drawer: Chat */}
+      <div className={`fixed inset-y-0 right-0 z-50 md:relative md:z-auto w-full md:w-80 bg-surface-container-low border-l border-outline-variant flex flex-col transform transition-transform duration-300 ease-in-out ${showChat ? 'translate-x-0' : 'translate-x-full md:hidden md:w-0'}`}>
+        <div className="h-14 border-b border-outline-variant flex items-center justify-between px-4 shrink-0 glass-panel">
+          <div className="flex items-center gap-2 text-on-surface font-semibold">
+            <MessageSquare size={16} className="text-primary" />
+            Team Chat
           </div>
-        )}
+          <button onClick={() => setShowChat(false)} className="text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/40 p-1.5 rounded-lg transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="flex-grow p-4 overflow-y-auto flex flex-col gap-3">
+          {messages.length === 0 ? (
+            <div className="text-center text-on-surface-variant text-sm mt-10 opacity-60">No messages yet.</div>
+          ) : (
+            messages.map((msg) => (
+              <div key={msg.id} className="flex flex-col">
+                <span className="text-label text-on-surface-variant/70 mb-0.5 ml-1">{msg.name}</span>
+                <div className="bg-surface-container rounded-2xl rounded-tl-sm px-3 py-2 text-sm text-on-surface break-words">
+                  {msg.text}
+                </div>
+              </div>
+            ))
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+        <form onSubmit={handleSendMessage} className="p-3 border-t border-outline-variant flex gap-2">
+          <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Message..."
+            className="flex-grow bg-surface-container border border-outline-variant rounded-full px-4 py-2 text-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary placeholder-on-surface-variant" />
+          <button type="submit" disabled={!chatInput.trim()} className="bg-primary text-on-primary p-2 rounded-full hover:bg-primary-container disabled:opacity-40 transition-all">
+            <Send size={14} />
+          </button>
+        </form>
+      </div>
       </div>
     </div>
   );

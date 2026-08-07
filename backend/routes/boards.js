@@ -3,6 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../db');
 const { verifyToken } = require('../middleware/auth');
 const { VALID_ROLES, requireBoardRole } = require('../lib/boardAccess');
+const { sanitizeString, isNonEmptyString } = require('../lib/validation');
 
 const router = express.Router();
 
@@ -34,7 +35,12 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { title } = req.body;
-    const boardTitle = title?.trim() || 'Untitled Board';
+    let boardTitle = title?.trim() || 'Untitled Board';
+    boardTitle = sanitizeString(boardTitle);
+    
+    if (!isNonEmptyString(boardTitle)) {
+      boardTitle = 'Untitled Board';
+    }
 
     const boardResult = await db.query(
       'INSERT INTO boards (title, owner_id) VALUES ($1, $2) RETURNING *',
