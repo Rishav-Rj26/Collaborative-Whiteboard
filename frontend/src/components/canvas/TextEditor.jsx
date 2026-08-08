@@ -48,8 +48,8 @@ export default function TextEditor({
       style={{
         top: getAbsolutePosition(editingText).y + (editingText.tool === 'sticky' ? 12 * zoom : 0),
         left: getAbsolutePosition(editingText).x + (editingText.tool === 'sticky' ? 12 * zoom : 0),
-        width: (editingText.tool === 'sticky' ? (editingText.width - 24) : 'auto') * zoom,
-        height: (editingText.tool === 'sticky' ? (editingText.height - 24) : 'auto') * zoom,
+        width: editingText.tool === 'sticky' ? (editingText.width - 24) * zoom : 'auto',
+        height: editingText.tool === 'sticky' ? (editingText.height - 24) * zoom : 'auto',
         color: editingText.tool === 'sticky' ? '#09090b' : editingText.color,
         fontSize: `${editingText.fontSize * zoom}px`,
         fontFamily: 'Geist',

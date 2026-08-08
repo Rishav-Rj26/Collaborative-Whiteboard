@@ -7,6 +7,7 @@ import Canvas from './Canvas';
 import ConfirmModal from './ConfirmModal';
 import { ArrowLeft, Share2, Check, Download, MessageSquare, X, Send } from 'lucide-react';
 import { SOCKET_URL, API_URL } from '../config';
+import { stringToColor } from '../hooks/useCanvasSocket';
 
 export default function Whiteboard() {
   const { boardId } = useParams();
@@ -182,10 +183,10 @@ export default function Whiteboard() {
             <span className="hidden md:inline">Export</span>
           </button>
           
-          <button onClick={() => setShowChat(!showChat)} className="relative flex items-center gap-2 px-2 py-2 md:px-3 text-sm font-medium text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors rounded-lg">
+          <button onClick={() => setIsChatOpen(!isChatOpen)} className="relative flex items-center gap-2 px-2 py-2 md:px-3 text-sm font-medium text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors rounded-lg">
             <MessageSquare size={16} />
             <span className="hidden md:inline">Chat</span>
-            {unreadCount > 0 && !showChat && (
+            {unreadCount > 0 && !isChatOpen && (
               <span className="absolute top-1 right-1 md:top-1.5 md:right-1.5 w-2 h-2 rounded-full bg-error ring-2 ring-surface"></span>
             )}
           </button>
@@ -251,13 +252,13 @@ export default function Whiteboard() {
         </div>
 
       {/* Right Sidebar Drawer: Chat */}
-      <div className={`fixed inset-y-0 right-0 z-50 md:relative md:z-auto w-full md:w-80 bg-surface-container-low border-l border-outline-variant flex flex-col transform transition-transform duration-300 ease-in-out ${showChat ? 'translate-x-0' : 'translate-x-full md:hidden md:w-0'}`}>
+      <div className={`fixed inset-y-0 right-0 z-50 md:relative md:z-auto w-full md:w-80 bg-surface-container-low border-l border-outline-variant flex flex-col transform transition-transform duration-300 ease-in-out ${isChatOpen ? 'translate-x-0' : 'translate-x-full md:hidden md:w-0'}`}>
         <div className="h-14 border-b border-outline-variant flex items-center justify-between px-4 shrink-0 glass-panel">
           <div className="flex items-center gap-2 text-on-surface font-semibold">
             <MessageSquare size={16} className="text-primary" />
             Team Chat
           </div>
-          <button onClick={() => setShowChat(false)} className="text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/40 p-1.5 rounded-lg transition-colors">
+          <button onClick={() => setIsChatOpen(false)} className="text-on-surface-variant hover:text-on-surface hover:bg-surface-variant/40 p-1.5 rounded-lg transition-colors">
             <X size={18} />
           </button>
         </div>

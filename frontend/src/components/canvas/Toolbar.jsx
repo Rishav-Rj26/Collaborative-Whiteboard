@@ -31,8 +31,8 @@ export default function Toolbar({
   );
 
   return (
-    <div className="absolute bottom-[4.5rem] left-1/2 -translate-x-1/2 md:bottom-auto md:left-4 md:top-1/2 md:-translate-y-1/2 md:translate-x-0 flex md:flex-col gap-2 z-40 pointer-events-none">
-      <div className="bg-surface border border-outline-variant rounded-xl p-1 shadow-obsidian flex flex-row md:flex-col gap-1 pointer-events-auto md:w-12 h-12 md:h-auto items-center overflow-x-auto max-w-[90vw] md:max-w-none no-scrollbar">
+    <div className="absolute bottom-[4.5rem] left-1/2 -translate-x-1/2 md:bottom-auto md:left-4 md:top-24 md:translate-y-0 flex md:flex-col gap-2 z-40 pointer-events-none">
+      <div className="bg-surface border border-outline-variant rounded-xl p-1 shadow-obsidian flex flex-row md:flex-col gap-1 pointer-events-auto md:w-12 h-12 md:h-auto items-center overflow-x-auto md:overflow-y-auto max-w-[90vw] md:max-w-none md:max-h-[calc(100vh-8rem)] no-scrollbar">
         
         <ToolButton id="select" icon="near_me" title="Select" />
         <ToolButton id="pan" icon="pan_tool" title="Pan" />
